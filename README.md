@@ -11,7 +11,7 @@ agent.py             snapshot → decide → act loop; takeover + guardrail gate
 engines/
   __init__.py        CamofoxEngine (stealth, bot-walled sites) + SenseiEngine (real Chrome, logins)
   chrome_cdp.py      Chromium engine — the light default (direct CDP, auto-launches headless Chrome)
-  _ws_cdp.py         dependency-free sync CDP-over-websocket client (AX reads, Input-domain actions)
+  _ws_cdp.py         minimal sync CDP-over-websocket client (AX reads, Input-domain actions; requires `websockets`)
 watch/
   server.py          :8901 — live frames, /state, /start, /takeover, /release, /input (remote control)
   chat_widget.html   the in-chat panel: live frames + zoom + takeover buttons + event log

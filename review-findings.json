@@ -1,0 +1,100 @@
+{
+  "findings": [
+    {
+      "id": "port-mismatch",
+      "severity": "error",
+      "file": "README.md",
+      "line": 12,
+      "description": "README documents watch server on port 8901 (lines 12, 38, 39), but watch/server.py defaults to port 8795 (line 28). The chat_widget.html hardcodes API = \"http://127.0.0.1:8901\" (line 34). Users following README instructions will get connection failures unless they explicitly pass 8901 as an argument.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "hardcoded-path",
+      "severity": "error",
+      "file": "watch/server.py",
+      "line": 23,
+      "description": "Line 23 has `sys.path.insert(0, \"/home/elijah/projects/browser-agent\")` — a hardcoded absolute path specific to the author's machine. This will cause ImportError on any other machine or CI environment. The path should be computed relative to the script location or use a proper package installation.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "world-writable-tmp-files",
+      "severity": "warning",
+      "file": "agent.py",
+      "line": 23,
+      "description": "Takeover file (/tmp/browser-agent-takeover, line 23) and approval file (/tmp/browser-agent-approvals, line 24) are in /tmp, which is world-writable. Any local user can create/remove these files, causing denial of service (pausing/resuming the agent arbitrarily) or bypassing guardrails (by pre-creating approval entries). On multi-user systems this is a security boundary violation. Consider using a user-specific directory like $XDG_RUNTIME_DIR or ~/.local/state/browser-agent/ with restricted permissions.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "cors-wildcard-on-localhost",
+      "severity": "info",
+      "file": "watch/server.py",
+      "line": 195,
+      "description": "The server sets `Access-Control-Allow-Origin: *` on all responses (lines 195, 201, 218). Since it binds to 127.0.0.1 only (line 266), the practical risk is low, but it allows any local web page to make requests to the control API. Consider restricting to the chat widget's origin or omitting the header entirely for localhost-only services.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "inaccurate-dependency-free-claim",
+      "severity": "warning",
+      "file": "README.md",
+      "line": 11,
+      "description": "README line 11 claims engines/_ws_cdp.py is a \"dependency-free sync CDP-over-websocket client\", but the file imports `websockets.sync.client` (line 13), which is a third-party PyPI package. This is misleading for users evaluating dependencies.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "approval-file-race-condition",
+      "severity": "warning",
+      "file": "agent.py",
+      "line": 57,
+      "description": "The `_approval_granted` function (lines 57-71) polls a JSON file without atomic reads/writes or file locking. Concurrent access from the watch UI (writing approvals) and the agent (reading) can cause: (a) partial reads during write, (b) lost approvals if the file is overwritten, (c) TOCTOU where an approval appears then disappears between check and use. For a security guardrail, this weakens the approval guarantee.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "no-authentication-on-control-api",
+      "severity": "info",
+      "file": "watch/server.py",
+      "line": 190,
+      "description": "The watch server exposes /takeover, /release, /input, /start endpoints with no authentication. Any process on localhost can control the browser, inject keystrokes/clicks, or start tasks. Since the server binds to 127.0.0.1 (line 266), this is mitigated but still means any compromised local web app or malicious browser extension could hijack the agent. Document this threat model explicitly.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "chrome-user-data-dir-in-tmp",
+      "severity": "warning",
+      "file": "engines/chrome_cdp.py",
+      "line": 61,
+      "description": "The auto-launched Chrome uses `--user-data-dir=/tmp/browser-agent-chrome` (line 61), which is world-writable. Another local user could plant malicious extensions, preferences, or cookies in this profile, affecting the agent's browser session. Consider using a per-user directory with restricted permissions (e.g., $XDG_CACHE_HOME/browser-agent/chrome).",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "current_tab-camofox-path-fragile",
+      "severity": "warning",
+      "file": "watch/server.py",
+      "line": 144,
+      "description": "The `current_tab()` function (lines 138-148) has a Camofox branch that uses `ENGINE.user` and `ENGINE.base` (lines 144-148). The default ENGINE is ChromeCdpEngine (line 31) which lacks a `user` attribute. While the code checks `ENGINE.name == \"chrome-cdp\"` first, swapping engines without updating this function would cause AttributeError. The function should use a common interface or duck-typing.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    }
+  ],
+  "reviewed_paths": [
+    "README.md",
+    "agent.py",
+    "engines/__init__.py",
+    "engines/chrome_cdp.py",
+    "engines/_ws_cdp.py",
+    "watch/server.py",
+    "watch/chat_widget.html",
+    "tests/canary_indeed.py"
+  ],
+  "tested": [],
+  "testing_summary": "No tests executed during review; this is a static analysis pass. The canary test (tests/canary_indeed.py) exercises the Camofox engine loop but requires live services.",
+  "risk_level": "medium",
+  "risk_rationale": "The change introduces a new README documenting a browser automation system with several security-relevant design choices (world-writable control files, unauthenticated localhost API, /tmp profiles) and two blocking bugs (port mismatch, hardcoded path). The security issues require architectural decisions about threat model; the bugs are straightforward fixes.",
+  "risk_scope": "source-or-external"
+}

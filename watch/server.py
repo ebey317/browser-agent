@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Watch server — see the agent's browser live, take over, hand back.
 
-    python3 watch/server.py            # serves http://localhost:8795
+    python3 watch/server.py            # serves http�localhost:8901
 
 Endpoints:
     GET  /            the UI (live screenshot + status + buttons)
@@ -20,12 +20,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, "/home/elijah/projects/browser-agent")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent import BrowserAgent, TAKEOVER_FILE  # noqa: E402
 from engines import CamofoxEngine  # noqa: E402
 from engines.chrome_cdp import ChromeCdpEngine  # noqa: E402
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8795
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8901
 STATE = {"events": [], "snapshot": "", "tab": None, "running": False, "task": ""}
 
 ENGINE = ChromeCdpEngine()  # lightweight default; CamofoxEngine(user_id="watch") for bot-walled sites
@@ -137,15 +137,17 @@ def demo_decide(snapshot: str, history: list) -> dict | None:
 
 def current_tab() -> str | None:
     """Best-effort: the engine's current page target."""
-    if getattr(ENGINE, "name", "") == "chrome-cdp":
+    if hasattr(ENGINE, "_targets"):
         targets = [t for t in ENGINE._targets()
                    if t.get("url", "") not in ("about:blank",) and not t.get("url", "").startswith("chrome://")]
         return targets[-1]["id"] if targets else None
-    with urllib.request.urlopen(
-        f"{ENGINE.base}/tabs?userId={ENGINE.user}", timeout=15
-    ) as r:
-        tabs = json.loads(r.read()).get("tabs") or []
-    return tabs[-1].get("id") if tabs else None
+    if hasattr(ENGINE, "base") and hasattr(ENGINE, "user"):
+        with urllib.request.urlopen(
+            f"{ENGINE.base}/tabs?userId={ENGINE.user}", timeout=15
+        ) as r:
+            tabs = json.loads(r.read()).get("tabs") or []
+        return tabs[-1].get("id") if tabs else None
+    return None
 
 
 def _png_for(tab: str) -> bytes | None:
@@ -192,13 +194,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Content-Length", "0")
@@ -215,7 +215,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Length", str(len(png)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(png)
                     return
