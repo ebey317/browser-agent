@@ -1,0 +1,74 @@
+{
+  "findings": [
+    {
+      "id": "f1",
+      "severity": "warning",
+      "file": "agent.py",
+      "line": 29,
+      "description": "GUARD_PATTERNS defined but never used. The is_guarded function delegates to engines.guard.is_guarded which has its own more comprehensive GUARD_PATTERNS. This dead code could cause confusion if someone updates one but not the other.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "f2",
+      "severity": "warning",
+      "file": "agent.py",
+      "line": 23,
+      "description": "STOP_FILE uses hardcoded '/tmp/browser-agent-stop' while engines/guard.py uses RUN_DIR (XDG_RUNTIME_DIR or /tmp)/browser-agent for TAKEOVER_FILE and APPROVAL_FILE. Inconsistent runtime directories could cause confusion in multi-user or containerized environments.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "f3",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 84,
+      "description": "Site allow feature (site_allow_check, remember_site_allow, forget_site_allow, SITE_ALLOW_FILE) is fully implemented but never called from is_guarded or anywhere else. The comment at line 84-88 describes integration with guard logic but it's not hooked up. This appears to be extra scope beyond the stated intent (which mentions grants but not site-level 'always allow').",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "f4",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 20,
+      "description": "RUN_DIR is created with chmod 0o700 but the files created within it (TAKEOVER_FILE, APPROVAL_FILE, SITE_ALLOW_FILE) inherit default permissions (typically 0o644 world-readable). While the content is low-sensitivity (action IDs, timestamps, domain allowlists), explicit chmod 0o600 on file creation would be more consistent with the directory protection.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "f5",
+      "severity": "info",
+      "file": "engines/_ws_cdp.py",
+      "line": 96,
+      "description": "element_facts catches all exceptions (Exception) and returns None for fail-closed behavior. This is intentional per the comment but could mask programming errors (e.g., typos in CDP method names). The broad catch is acceptable for a fail-closed security boundary but worth noting.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f6",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 76,
+      "description": "OPAQUE_TARGET regex (r'^\\s*(bid\\s*[:=]\\s*)?\\d+\\s*$') does not match 'bid 1' (space separator without colon/equals). However, decide_llm.py normalizes all numeric targets to 'bid:N' format (line 90-92), so this only matters if actions come from an untrusted/unnormalized source. The guard's fail-closed design means unrecognized formats are guarded anyway.",
+      "action": "no-op",
+      "review_scope": "source"
+    }
+  ],
+  "reviewed_paths": [
+    "agent.py",
+    "decide_llm.py",
+    "engines/_ws_cdp.py",
+    "engines/chrome_cdp.py",
+    "engines/guard.py",
+    "tests/test_approval_token.py",
+    "tests/test_decide_llm.py",
+    "tests/test_gates.py",
+    "tests/test_guard_element.py"
+  ],
+  "tested": [],
+  "testing_summary": "Reviewed test files for coverage of guard logic, grants, element classification, and decide_llm validation. Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests).",
+  "risk_level": "low",
+  "risk_rationale": "The change correctly implements the three stated goals: fixes the import order, adds real element classification with fail-closed typing guards, and introduces single-use action-bound grants to prevent double-gating. No authorization bypasses or privacy leaks found. The issues are minor dead code, inconsistent temp paths, and an unused site-allow feature.",
+  "risk_scope": "source-or-external"
+}

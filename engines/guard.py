@@ -53,7 +53,14 @@ def takeover_stale() -> bool:
 
 def take_over() -> None:
     revoke_grants()  # an approval given before the human grabbed the wheel is void
-    TAKEOVER_FILE.write_text(f"human\n{time.time():.0f}\n")
+    # Write with owner-only permissions (0o600)
+    fd = os.open(TAKEOVER_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(f"human\n{time.time():.0f}\n")
+    except Exception:
+        os.unlink(TAKEOVER_FILE)
+        raise
 
 
 def release() -> None:
@@ -63,7 +70,14 @@ def release() -> None:
 
 def atomic_json(path: Path, data: dict) -> None:  # Jev: approval race
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data))
+    # Write with owner-only permissions (0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data))
+    except Exception:
+        os.unlink(tmp)
+        raise
     tmp.replace(path)
 
 
@@ -81,50 +95,6 @@ def _domain_of(target: str) -> str:
     return m.group(1).lower() if m else ""
 
 
-# ---- Allow once / Always allow (site-level approval memory) --------------------
-# Framing adopted from Anthropic Cowork's built-in-browser permissions: a human
-# who approved an action on a site once can mark that (kind, domain) pair
-# "always". Sensitive classes (ELEMENT_PATTERNS) are NEVER remembered — a site
-# grant covers ordinary interaction, never passwords or payments.
-SITE_ALLOW_FILE = Path(os.environ.get("BA_SITE_ALLOW_FILE",
-                                      str(RUN_DIR / "site_allow.json")))  # {"kind|domain": "always"}
-
-
-def site_allow_check(action: dict) -> bool:
-    kind = action.get("kind", "")
-    domain = _domain_of(action.get("target", "")) or _domain_of(action.get("value", ""))
-    if not domain:
-        return False
-    try:
-        data = json.loads(SITE_ALLOW_FILE.read_text())
-    except (ValueError, OSError):
-        return False
-    return data.get(f"{kind}|{domain}") == "always"
-
-
-def remember_site_allow(action: dict) -> None:
-    domain = _domain_of(action.get("target", "")) or _domain_of(action.get("value", ""))
-    if not domain:
-        return
-    kind = action.get("kind", "")
-    try:
-        data = json.loads(SITE_ALLOW_FILE.read_text())
-    except (ValueError, OSError):
-        data = {}
-    data[f"{kind}|{domain}"] = "always"
-    atomic_json(SITE_ALLOW_FILE, data)
-
-
-def forget_site_allow(domain: str) -> None:
-    """Revoke every 'always' for a domain (Settings > revoke, Cowork-style)."""
-    try:
-        data = json.loads(SITE_ALLOW_FILE.read_text())
-    except (ValueError, OSError):
-        return
-    data = {k: v for k, v in data.items() if not k.endswith(f"|{domain.lower()}")}
-    atomic_json(SITE_ALLOW_FILE, data)
-
-
 def is_guarded(action: dict, element: str | None = None) -> bool:
     """element = what the browser says the target is (see CdpPage.element_facts).
 
@@ -132,6 +102,11 @@ def is_guarded(action: dict, element: str | None = None) -> bool:
     facts) is guarded, because a numeric id carries no word to match and that
     is exactly how a password field would slip past a text-only check.
     """
+    # Normalize: None and empty/whitespace-only element facts = unknown
+    if element is not None:
+        element = element.strip()
+        if not element:
+            element = None
     blob = json.dumps(action).lower()
     if element:
         blob += " " + element.lower()

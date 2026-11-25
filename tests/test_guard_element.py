@@ -66,3 +66,19 @@ def test_navigation_outside_http_is_guarded_and_http_is_not():
         assert guard.is_guarded({"kind": "navigate", "value": u}), u
         assert guard.is_guarded({"kind": "navigate", "target": u}), u
     assert not guard.is_guarded({"kind": "navigate", "value": "https://example.com/jobs"})
+
+
+def test_empty_element_facts_bypasses_opaque_target_guard(monkeypatch):
+    """Regression: empty/whitespace element facts must not bypass opaque-target guard.
+    element='' or element=' ' should be treated as unknown (None), so typing into
+    a bare numeric/bid target is guarded.
+    """
+    a = {"kind": "type", "target": "bid:3", "value": "secret"}
+    # Empty string
+    assert guard.is_guarded(a, ""), "empty element facts should be guarded"
+    # Whitespace only
+    assert guard.is_guarded(a, " "), "whitespace element facts should be guarded"
+    # None (already tested but explicit)
+    assert guard.is_guarded(a, None), "None element facts should be guarded"
+    # But with actual element facts, it should not be guarded by opaque-target rule
+    assert not guard.is_guarded(a, "input type=search"), "identified safe element should not be guarded"
