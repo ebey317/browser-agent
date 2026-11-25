@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Browser Agent — in-chat panel</title>
+<style>
+  :root { --z: 1; }
+  body { margin:0; font-family:system-ui; background:var(--card,#111); color:var(--foreground,#eee); display:flex; flex-direction:column; }
+  header { display:flex; gap:8px; align-items:center; padding:6px 8px; border-bottom:1px solid var(--border,#333); }
+  h1 { font-size:13px; margin:0; flex:1; font-weight:600; }
+  button { padding:5px 12px; border:0; border-radius:6px; font-weight:600; cursor:pointer; font-size:12px; }
+  #grab { background:#e5484d; color:#fff; } #back { background:#46a758; color:#fff; }
+  .zoom { background:var(--border,#333); color:inherit; min-width:34px; }
+  #status { font-size:11px; padding:3px 10px; background:var(--muted,#000); }
+  #viewport { flex:1; overflow:auto; background:#000; display:flex; justify-content:center; }
+  #viewport img { transform-origin: top center; transform: scale(var(--z)); width: 100%; max-width: 900px; }
+  #events { height:86px; overflow:auto; font:10.5px monospace; padding:4px 8px; white-space:pre-wrap; border-top:1px solid var(--border,#333); }
+  .on #grab { opacity:.3; pointer-events:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Browser Agent</h1>
+  <button class="zoom" id="z0">1×</button>
+  <button class="zoom" id="z1">1.5×</button>
+  <button class="zoom" id="z2">2×</button>
+  <button id="grab">✊ Take over</button>
+  <button id="back">🤝 Hand back</button>
+</header>
+<div id="status">connecting…</div>
+<div id="viewport"><img id="img" alt="agent browser"></div>
+<div id="events"></div>
+<script>
+const API = "http://127.0.0.1:8901";
+const $ = id => document.getElementById(id);
+const img = $("img");
+let shotW = 0, shotH = 0;
+img.onload = () => { shotW = img.naturalWidth; shotH = img.naturalHeight; };
+
+function sendInput(b) {
+  b.shotW = shotW; b.shotH = shotH;
+  return fetch(API + "/input", { method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(b) }).then(r => r.json()).then(r => {
+      if (r && r.skipped) $("status").textContent = r.skipped;
+    });
+}
+img.addEventListener("click", e => {
+  const rect = img.getBoundingClientRect();
+  sendInput({ kind: "click", x: (e.clientX - rect.left) / rect.width * shotW,
+              y: (e.clientY - rect.top) / rect.height * shotH });
+});
+img.addEventListener("mousemove", e => {
+  const rect = img.getBoundingClientRect();
+  sendInput({ kind: "move", x: (e.clientX - rect.left) / rect.width * shotW,
+              y: (e.clientY - rect.top) / rect.height * shotH });
+});
+img.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = img.getBoundingClientRect();
+  sendInput({ kind: "wheel", dy: e.deltaY, dx: e.deltaX,
+              x: (e.clientX - rect.left) / rect.width * shotW,
+              y: (e.clientY - rect.top) / rect.height * shotH });
+}, { passive: false });
+window.addEventListener("keydown", e => {
+  if (!document.body.classList.contains("on")) return;
+  if (e.key.length === 1) sendInput({ kind: "type", text: e.key });
+  else sendInput({ kind: "key", key: e.key });
+});
+$("grab").onclick = () => fetch(API + "/takeover", { method: "POST" });
+$("back").onclick = () => fetch(API + "/release", { method: "POST" });
+$("z0").onclick = () => document.documentElement.style.setProperty("--z", 1);
+$("z1").onclick = () => document.documentElement.style.setProperty("--z", 1.5);
+$("z2").onclick = () => document.documentElement.style.setProperty("--z", 2);
+async function tick() {
+  try {
+    const st = await (await fetch(API + "/state")).json();
+    $("status").textContent = st.running
+      ? ("agent RUNNING" + (st.takeover ? " — ⏸ PAUSED: you have the wheel" : " — autonomous"))
+      : ("agent idle" + (st.takeover ? " — you have the wheel" : ""));
+    document.body.classList.toggle("on", !!st.takeover);
+    $("events").textContent = (st.events || []).slice(-12)
+      .map(e => new Date(e.ts * 1000).toLocaleTimeString() + " " + e.kind + " " + JSON.stringify(e.detail || {}).slice(0, 110))
+      .join("\n");
+    $("img").src = API + "/frame?r=" + Date.now();
+  } catch (e) { $("status").textContent = "watch server not reachable"; }
+}
+setInterval(tick, 1500); tick();
+</script>
+</body>
+</html>
