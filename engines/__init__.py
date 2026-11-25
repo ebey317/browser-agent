@@ -53,6 +53,16 @@ class CamofoxEngine:
     def _t(self, tab_id: str, path: str) -> str:
         return f"{self.base}/tabs/{tab_id}{path}?userId={self.user}"
 
+    def get_current_tab(self) -> str | None:
+        try:
+            with urllib.request.urlopen(
+                f"{self.base}/tabs?userId={self.user}", timeout=15
+            ) as r:
+                tabs = json.loads(r.read()).get("tabs") or []
+            return tabs[-1].get("id") if tabs else None
+        except Exception:
+            return None
+
     def open(self, url: str) -> str:
         r = _post(f"{self.base}/tabs/open", {"userId": self.user, "url": url})
         return r["tabId"]
@@ -99,6 +109,13 @@ class SenseiEngine:
 
     def __init__(self, base: str = SENSEI_BASE):
         self.base = base.rstrip("/")
+
+    def get_current_tab(self) -> str | None:
+        try:
+            r = _get(f"{self.base}/agent/state")
+            return r.get("tab_id") or r.get("page_id") or "current"
+        except Exception:
+            return None
 
     def open(self, url: str) -> str:
         r = _post(f"{self.base}/agent/navigate", {"url": url})

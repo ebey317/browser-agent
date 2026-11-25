@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Watch server — see the agent's browser live, take over, hand back.
 
-    python3 watch/server.py            # serves http�localhost:8901
+    python3 watch/server.py            # serves http://localhost:8901
 
 Endpoints:
     GET  /            the UI (live screenshot + status + buttons)
@@ -136,17 +136,9 @@ def demo_decide(snapshot: str, history: list) -> dict | None:
 
 
 def current_tab() -> str | None:
-    """Best-effort: the engine's current page target."""
-    if hasattr(ENGINE, "_targets"):
-        targets = [t for t in ENGINE._targets()
-                   if t.get("url", "") not in ("about:blank",) and not t.get("url", "").startswith("chrome://")]
-        return targets[-1]["id"] if targets else None
-    if hasattr(ENGINE, "base") and hasattr(ENGINE, "user"):
-        with urllib.request.urlopen(
-            f"{ENGINE.base}/tabs?userId={ENGINE.user}", timeout=15
-        ) as r:
-            tabs = json.loads(r.read()).get("tabs") or []
-        return tabs[-1].get("id") if tabs else None
+    """Best-effort: the engine's current page target via common interface."""
+    if hasattr(ENGINE, "get_current_tab"):
+        return ENGINE.get_current_tab()
     return None
 
 

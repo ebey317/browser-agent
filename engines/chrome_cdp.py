@@ -84,6 +84,11 @@ class ChromeCdpEngine:
     def _targets(self) -> list[dict]:
         return [t for t in _get("/json") if t.get("type") == "page"]
 
+    def get_current_tab(self) -> str | None:
+        targets = [t for t in self._targets()
+                   if t.get("url", "") not in ("about:blank",) and not t.get("url", "").startswith("chrome://")]
+        return targets[-1]["id"] if targets else None
+
     def open(self, url: str) -> str:
         ensure_chrome(headless=os.environ.get("SENSEI_CHROME_HEADLESS") == "1")
         req = urllib.request.Request(f"{self.base}/json/new?{url}", method="PUT")
