@@ -20,8 +20,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-TAKEOVER_FILE = Path(os.environ.get("BA_TAKEOVER_FILE", "/tmp/browser-agent-takeover"))
-APPROVAL_FILE = Path(os.environ.get("BA_APPROVAL_FILE", "/tmp/browser-agent-approvals"))
+STOP_FILE = Path(os.environ.get("BA_STOP_FILE", "/tmp/browser-agent-stop"))
+
+from engines import guard as _guard
+TAKEOVER_FILE = _guard.TAKEOVER_FILE      # single source of truth (Jev H6)
+APPROVAL_FILE = _guard.APPROVAL_FILE
 
 GUARD_PATTERNS = [
     r"password",
@@ -41,7 +44,7 @@ UNTRUSTED_BANNER = (
 
 
 def _takeover_active() -> bool:
-    return TAKEOVER_FILE.exists()
+    return _guard.takeover_active()          # fail-closed, stale-aware (H4/I6)
 
 
 def _wait_for_release(poll: float = 1.0) -> None:
@@ -49,26 +52,12 @@ def _wait_for_release(poll: float = 1.0) -> None:
         time.sleep(poll)
 
 
-def is_guarded(action: dict) -> bool:
-    blob = json.dumps(action).lower()
-    return any(re.search(p, blob) for p in GUARD_PATTERNS)
+def is_guarded(action: dict, element: str | None = None) -> bool:
+    return _guard.is_guarded(action, element)  # shared patterns (H6)
 
 
 def _approval_granted(action_id: str, timeout: float = 300.0) -> bool:
-    """Poll the approval file for `{"<action_id>": "approved"|"denied"}`."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if APPROVAL_FILE.exists():
-            try:
-                data = json.loads(APPROVAL_FILE.read_text())
-            except (ValueError, OSError):
-                data = {}
-            if data.get(action_id) == "approved":
-                return True
-            if data.get(action_id) == "denied":
-                return False
-        time.sleep(1.0)
-    return False
+    return _guard.approval_granted(action_id, timeout)  # atomic read path
 
 
 @dataclass
@@ -100,6 +89,11 @@ class BrowserAgent:
         self.log("nav", url=url, tab=tab)
         history: list[dict] = []
         for step in range(self.max_steps):
+            if STOP_FILE.exists():
+                STOP_FILE.unlink()
+                self.log("stop", step=step)
+                return {"ok": False, "reason": "stopped", "tab": tab,
+                        "events": [e.__dict__ for e in self.events]}
             if _takeover_active():
                 self.log("takeover", status="paused", step=step)
                 _wait_for_release()
@@ -111,12 +105,25 @@ class BrowserAgent:
                 return {"ok": True, "tab": tab, "events": [e.__dict__ for e in self.events]}
             action = {k: v for k, v in decision.items() if k != "thought"}
             action_id = f"{step}-{int(time.time())}"
-            if is_guarded(action):
-                self.log("guard", action=action, action_id=action_id, step=step)
+            facts = None
+            ef = getattr(self.engine, "element_facts", None)
+            if ef and action.get("kind") in ("click", "type"):
+                try:
+                    facts = ef(tab, action.get("target", ""))
+                except Exception:  # noqa: BLE001 - unknown element => fail-closed rules apply
+                    facts = None
+            if is_guarded(action, facts):
+                self.log("guard", action=action, element=facts, action_id=action_id, step=step)
                 if not _approval_granted(action_id):
                     self.log("guard", action_id=action_id, status="denied-or-timeout", step=step)
                     history.append({"step": step, "result": "blocked-by-guard"})
                     continue
+                if _takeover_active():  # human grabbed the wheel while we waited: stale decision
+                    self.log("guard", action_id=action_id, status="void-takeover", step=step)
+                    history.append({"step": step, "result": "approval-void-takeover"})
+                    continue
+                _guard.grant(action)    # one-shot, bound to exactly this action
+                self.log("guard", action_id=action_id, status="approved", step=step)
             self.log("action", action=action, step=step)
             try:
                 result = self.engine.act(tab, action.get("kind", ""), action.get("target", ""), action.get("value"))
@@ -130,9 +137,8 @@ class BrowserAgent:
     # ---- takeover API (used by the watch server) -----------------------
     @staticmethod
     def take_over() -> None:
-        TAKEOVER_FILE.write_text("human")
+        _guard.take_over()
 
     @staticmethod
     def release() -> None:
-        if _takeover_active():
-            TAKEOVER_FILE.unlink()
+        _guard.release()

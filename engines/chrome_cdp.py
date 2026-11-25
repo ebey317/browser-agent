@@ -59,8 +59,15 @@ def ensure_chrome(headless: bool = False) -> bool:
     flags.append("about:blank")  # headless chrome exits without a URL arg
     if headless:
         flags.insert(0, "--headless=new")
-    # separate agent profile so a launch never fights the human's Chrome
-    flags.append("--user-data-dir=/tmp/browser-agent-chrome")
+    # separate agent profile in a per-user dir (review: chrome-user-data-dir-in-tmp)
+    import pathlib as _pl
+    cache = _pl.Path(os.environ.get("XDG_CACHE_HOME", _pl.Path.home() / ".cache")) / "browser-agent"
+    cache.mkdir(parents=True, exist_ok=True)
+    try:
+        cache.chmod(0o700)
+    except OSError:
+        pass
+    flags.append(f"--user-data-dir={cache / 'chrome'}")
     tried = [CHROME_BIN, "google-chrome", "chromium", "chromium-browser"]
     for binary in dict.fromkeys(tried):
         try:
@@ -133,6 +140,13 @@ class ChromeCdpEngine:
         ws = self._ws(tab_id)
         try:
             ws.call("Page.navigate", {"url": url})
+        finally:
+            ws.close()
+
+    def element_facts(self, tab_id: str, target: str) -> str | None:
+        ws = self._ws(tab_id)
+        try:
+            return ws.element_facts(target)
         finally:
             ws.close()
 

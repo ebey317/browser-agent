@@ -10,9 +10,39 @@ from __future__ import annotations
 import json
 import urllib.request
 
+from engines import guard
 from websockets.sync.client import connect
 
+_PASSWORD_RE = None
+
+
+def _redact_sensitive(snapshot: str) -> str:
+    """Jev H7/I3: password-field VALUES never enter the agent's snapshot."""
+    import re
+    # blank out value="..." / value "..." that follows a password-ish node
+    return re.sub(
+        r'(?i)(password[^"]*"[^\n]*)value "([^"]*)"',
+        r'\1value "[REDACTED]"',
+        snapshot,
+    )
+
 MSG_TIMEOUT = 20
+
+
+def page_act(page, kind: str, target: str, value: str) -> dict | None:
+    """Engine-layer gate (Jev I5/I4): runs BEFORE any dispatch.
+
+    Returns a dict to skip the action, or None to proceed.
+    Suppression happens here, at the CDP input layer — not in the loop.
+    """
+    if kind in ("click", "type", "press", "scroll", "wheel"):
+        if guard.takeover_active():
+            return {"skipped": "takeover"}
+        action = {"kind": kind, "target": target, "value": value}
+        facts = page.element_facts(target) if kind in ("click", "type") else None
+        if guard.is_guarded(action, facts) and not guard.consume_grant(action):
+            return {"skipped": "guarded", "requires": "human approval"}
+    return None
 
 
 class CdpPage:
@@ -44,6 +74,28 @@ class CdpPage:
                     raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
                 return msg.get("result", {})
 
+    def element_facts(self, target: str) -> str | None:
+        """What the browser says this target is, as one line of text, or None if it
+        cannot be resolved. Uses DOM.describeNode + the AX node only: no page JS."""
+        try:
+            bid = self._resolve_bid(target)
+            node = self.call("DOM.describeNode", {"backendNodeId": bid}).get("node", {})
+            a = node.get("attributes") or []
+            attrs = dict(zip(a[0::2], a[1::2]))
+            parts = [str(node.get("nodeName", "")).lower()]
+            for k in ("type", "name", "id", "autocomplete", "aria-label", "placeholder"):
+                if attrs.get(k):
+                    parts.append(f"{k}={attrs[k]}")
+            ax = self.call("Accessibility.getPartialAXTree",
+                           {"backendNodeId": bid, "fetchRelatives": False}).get("nodes", [])
+            if ax:
+                role = (ax[0].get("role", {}) or {}).get("value", "")
+                name = (ax[0].get("name", {}) or {}).get("value", "")
+                parts.append(f"role={role} name={name}")
+            return " ".join(parts)
+        except Exception:  # noqa: BLE001 - unresolved => caller treats as unknown
+            return None
+
     # ---- AX snapshot (the ONLY page read exposed to the agent) ----------
     def ax_snapshot(self, max_nodes: int = 400) -> str:
         tree = self.call("Accessibility.getFullAXTree", {}).get("nodes", [])
@@ -58,7 +110,7 @@ class CdpPage:
                 if prop.get("name") == "focusable" and prop.get("value", {}).get("value"):
                     desc += " [focusable]"
             lines.append(f"- {desc} (bid={n.get('backendDOMNodeId')})" if n.get("backendDOMNodeId") else f"- {desc}")
-        return "\n".join(lines)
+        return _redact_sensitive("\n".join(lines))
 
     # ---- actions (Input domain at AX-node coordinates) -------------------
     def _node_center(self, bid: int) -> tuple[float, float]:
@@ -92,6 +144,12 @@ class CdpPage:
         raise RuntimeError(f"no AX node matching {target!r}")
 
     def act(self, kind: str, target: str, value: str) -> dict:
+        r = page_act(self, kind, target, value)
+        if r is not None:
+            return r
+        return self._act_inner(kind, target, value)
+
+    def _act_inner(self, kind: str, target: str, value: str) -> dict:
         if kind == "click":
             return self._click_at(*self._node_center(self._resolve_bid(target)))
         if kind == "type":
