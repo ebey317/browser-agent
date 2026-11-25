@@ -1,29 +1,47 @@
 {
   "findings": [
     {
-      "id": "dispatch_input-ignores-engine-param",
-      "severity": "error",
-      "file": "watch/server.py",
-      "line": 69,
-      "description": "The `dispatch_input` function (lines 58-95) accepts an `engine` parameter but ignores it on line 69, using the global `ENGINE` instead: `ws = _page_ws(ENGINE, tab)`. The function is called from `do_POST` (line 239) with `ENGINE` as the argument, so it works for the default case, but the parameter is misleading and would break if a different engine were passed. The function is also hardcoded to use `CdpPage` (CDP-only) via `_page_ws`, so it only works with ChromeCdpEngine regardless.",
-      "action": "auto-fix",
+      "id": "world-writable-tmp-files",
+      "severity": "warning",
+      "file": "agent.py",
+      "line": 23,
+      "description": "Takeover file (/tmp/browser-agent-takeover, line 23) and approval file (/tmp/browser-agent-approvals, line 24) are in /tmp, which is world-writable. Any local user can create/remove these files, causing denial of service (pausing/resuming the agent arbitrarily) or bypassing guardrails (by pre-creating approval entries). On multi-user systems this is a security boundary violation. Consider using a user-specific directory like $XDG_RUNTIME_DIR or ~/.local/state/browser-agent/ with restricted permissions.",
+      "action": "ask-user",
       "review_scope": "source"
     },
     {
-      "id": "ui-title-mismatch",
+      "id": "approval-file-race-condition",
       "severity": "warning",
-      "file": "watch/server.py",
-      "line": 162,
-      "description": "The embedded UI HTML (line 162) shows `<h1>Browser Agent \u2014 Camofox</h1>` but the default engine on line 31 is `ChromeCdpEngine()`. This is misleading for users who see the UI. The title should reflect the actual engine or be generic.",
-      "action": "auto-fix",
+      "file": "agent.py",
+      "line": 57,
+      "description": "The `_approval_granted` function (lines 57-71) polls a JSON file without atomic reads/writes or file locking. Concurrent access from the watch UI (writing approvals) and the agent (reading) can cause: (a) partial reads during write, (b) lost approvals if the file is overwritten, (c) TOCTOU where an approval appears then disappears between check and use. For a security guardrail, this weakens the approval guarantee.",
+      "action": "ask-user",
       "review_scope": "source"
     },
     {
-      "id": "agentrunner-last_tab-engine-specific",
+      "id": "no-authentication-on-control-api",
+      "severity": "info",
+      "file": "watch/server.py",
+      "line": 229,
+      "description": "The watch server exposes /takeover, /release, /input, /start endpoints with no authentication (lines 229-247). Any process on localhost can control the browser, inject keystrokes/clicks, or start tasks. Since the server binds to 127.0.0.1 only (line 256), this is mitigated but still means any compromised local web app or malicious browser extension could hijack the agent. Document this threat model explicitly.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "chrome-user-data-dir-in-tmp",
+      "severity": "warning",
+      "file": "engines/chrome_cdp.py",
+      "line": 61,
+      "description": "The auto-launched Chrome uses `--user-data-dir=/tmp/browser-agent-chrome` (line 61), which is world-writable. Another local user could plant malicious extensions, preferences, or cookies in this profile, affecting the agent's browser session. Consider using a per-user directory with restricted permissions (e.g., $XDG_CACHE_HOME/browser-agent/chrome).",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "dispatch-input-cdp-only",
       "severity": "warning",
       "file": "watch/server.py",
-      "line": 50,
-      "description": "In `AgentRunner.run()` (line 50), the code accesses `agent.engine._last_tab` which only exists on `ChromeCdpEngine` (line 81 of engines/chrome_cdp.py). `CamofoxEngine` and `SenseiEngine` in engines/__init__.py do not have this attribute. If the global `ENGINE` is swapped to a different engine, the tab tracking for screenshots will fail silently (falling back to `STATE[\"tab\"]` which may be stale). This is a design coupling between the watch server and ChromeCdpEngine.",
+      "line": 68,
+      "description": "The `dispatch_input` function (lines 58-94) and `_page_ws` helper (lines 97-99) are hardcoded to use CDP via `CdpPage` from `engines._ws_cdp`. They only work with `ChromeCdpEngine`. The global `ENGINE` on line 31 defaults to `ChromeCdpEngine()`, but if swapped to `CamofoxEngine` or `SenseiEngine`, `/input` endpoint will fail with AttributeError. The function signature was simplified (removed `engine` param) but the implementation remains engine-specific. Either document this as CDP-only or add a common `input_dispatch` interface to all engines.",
       "action": "ask-user",
       "review_scope": "source"
     },
@@ -32,21 +50,32 @@
       "severity": "info",
       "file": "watch/server.py",
       "line": 2,
-      "description": "The module docstring on line 2 contains a corrupted em dash character: `Watch server \u00e2\u20ac\u201c see the agent's browser` (rendered as `M-bM-^@M-^T` in cat -A). This is a pre-existing encoding issue from the base commit, not introduced by this change. Should be `Watch server \u2014 see the agent's browser` or `Watch server - see the agent's browser`.",
+      "description": "The module docstring on line 2 contains a corrupted em dash character: `Watch server - see the agent's browser` (rendered as `M-bM-^@M-^T` in cat -A). This is a pre-existing encoding issue from the base commit, not introduced by this change. Should be `Watch server — see the agent's browser` or `Watch server -- see the agent's browser`.",
       "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "readme-websockets-dependency",
+      "severity": "info",
+      "file": "README.md",
+      "line": 14,
+      "description": "README line 14 describes `_ws_cdp.py` as 'minimal sync CDP-over-websocket client (AX reads, Input-domain actions; requires `websockets`)'. This correctly notes the `websockets` dependency (unlike the previous 'dependency-free' claim). However, the engine contract in engines/__init__.py (line 11) states 'engines expose NO raw DOM and NO in-page JS to the agent' but `_ws_cdp.py` uses `websockets.sync.client` which is a third-party runtime dependency. This is accurately documented now but worth noting for users evaluating the stack.",
+      "action": "no-op",
       "review_scope": "source"
     }
   ],
   "reviewed_paths": [
     "README.md",
-    "engines/__init__.py",
-    "engines/chrome_cdp.py",
+    "agent.py",
     "watch/server.py",
-    "agent.py"
+    "engines/chrome_cdp.py",
+    "engines/__init__.py",
+    "engines/_ws_cdp.py",
+    "watch/chat_widget.html"
   ],
   "tested": [],
-  "testing_summary": "Static analysis review of changed files. Verified the get_current_tab() common interface is correctly implemented on all three engines (ChromeCdpEngine, CamofoxEngine, SenseiEngine). Verified port fix (8795\u21928901) matches README and chat_widget.html. Verified hardcoded path fix uses Pathlib. Verified CORS headers removed. Verified current_tab() uses common interface. Did not execute tests.",
-  "risk_level": "low",
-  "risk_rationale": "The change successfully addresses the critical bugs (port mismatch, hardcoded path) and implements a clean common interface for get_current_tab(). Remaining issues are minor: a misleading UI title, an unused parameter in dispatch_input (which is CDP-only by design), and a pre-existing encoding artifact. The pre-existing security items (world-writable tmp files, approval race, no auth, chrome user-data in /tmp) were acknowledged in prior rounds and remain as ask-user items requiring architectural decisions, not code defects in this change.",
+  "testing_summary": "No tests executed during review. Review was static analysis of source code changes only.",
+  "risk_level": "medium",
+  "risk_rationale": "The change introduces a common `get_current_tab()` interface across all engines (good), fixes the hardcoded path and port mismatch (good), but leaves several pre-existing security concerns unaddressed: world-writable temp files for takeover/approvals, race condition in approval polling, no authentication on control API, and Chrome user-data-dir in /tmp. The dispatch_input function is now more tightly coupled to CDP despite the engine-agnostic refactoring. These are known risks the user has chosen not to fix in prior rounds, but they remain reachable.",
   "risk_scope": "source-or-external"
 }

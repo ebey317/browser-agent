@@ -6,6 +6,9 @@ Requires a Chrome/Chromium running with --remote-debugging-port=9222
 
 Same AX-only contract as every other engine: the agent gets the
 accessibility snapshot, never raw DOM, never in-page JS.
+
+Implements get_current_tab() by returning the most recent non-blank,
+non-chrome:// page target.
 """
 
 from __future__ import annotations
@@ -13,7 +16,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import socket
 import subprocess
 import time
 import urllib.request
@@ -115,12 +117,11 @@ class ChromeCdpEngine:
     # Chrome's /json endpoints don't expose AX over HTTP, so this engine
     # needs one websocket. Kept dependency-free via a tiny frame client.
     # For v1 we cheat where the tooling already exists:
-    def _ws(self, tab_id: str):  # noqa: ANN202 - internal
+    def _ws(self, tab_id: str):
         from engines._ws_cdp import CdpPage  # local, no third-party deps
         return CdpPage(self.base, tab_id)
 
     def screenshot(self, tab_id: str) -> bytes | None:
-        from engines._ws_cdp import CdpPage
         ws = self._ws(tab_id)
         try:
             b64 = ws.call("Page.captureScreenshot", {}).get("data")
@@ -129,7 +130,6 @@ class ChromeCdpEngine:
             ws.close()
 
     def navigate(self, tab_id: str, url: str) -> None:
-        from engines._ws_cdp import CdpPage
         ws = self._ws(tab_id)
         try:
             ws.call("Page.navigate", {"url": url})
@@ -137,7 +137,6 @@ class ChromeCdpEngine:
             ws.close()
 
     def act(self, tab_id: str, kind: str, target: str, value: str | None = None) -> dict:
-        from engines._ws_cdp import CdpPage
         ws = self._ws(tab_id)
         try:
             return ws.act(kind, target, value or "")

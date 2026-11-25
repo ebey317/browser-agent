@@ -13,8 +13,7 @@ engines/
   chrome_cdp.py      Chromium engine — the light default (direct CDP, auto-launches headless Chrome)
   _ws_cdp.py         minimal sync CDP-over-websocket client (AX reads, Input-domain actions; requires `websockets`)
 watch/
-  server.py          :8901 — live frames, /state, /start, /takeover, /release, /input (remote control)
-  chat_widget.html   the in-chat panel: live frames + zoom + takeover buttons + event log
+  server.py          :8901 — live frames, /state, /start, /takeover, /release, /input (remote control; embeds the in-chat panel UI)
 tests/canary_indeed.py
 ```
 

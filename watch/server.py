@@ -13,7 +13,6 @@ Endpoints:
 from __future__ import annotations
 
 import json
-import urllib.request
 import sys
 import threading
 import time
@@ -21,9 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent import BrowserAgent, TAKEOVER_FILE  # noqa: E402
-from engines import CamofoxEngine  # noqa: E402
-from engines.chrome_cdp import ChromeCdpEngine  # noqa: E402
+from agent import TAKEOVER_FILE, BrowserAgent
+from engines.chrome_cdp import ChromeCdpEngine
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8901
 STATE = {"events": [], "snapshot": "", "tab": None, "running": False, "task": ""}
@@ -43,7 +41,6 @@ class AgentRunner(threading.Thread):
     def run(self):
         STATE["running"] = True
         agent = BrowserAgent(ENGINE, self.decide_fn, max_steps=20)
-        import time as _t
         try:
             agent.run(self.task_url)
         finally:

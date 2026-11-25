@@ -7,6 +7,7 @@ Every engine implements the same small contract:
     screenshot(tab_id) -> bytes | None
     act(tab_id, kind, target, value) -> dict
     close(tab_id) -> None
+    get_current_tab() -> str | None  (best-effort current page target for watch UI)
 
 Rule from the Sentinel design: engines expose NO raw DOM and NO in-page JS
 to the agent. Click/type/nav only, judged against the AX snapshot.

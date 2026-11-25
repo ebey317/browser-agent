@@ -11,11 +11,11 @@ import json
 import re
 import sys
 import time
-import urllib.request
+from pathlib import Path
 
-sys.path.insert(0, "/home/elijah/projects/browser-agent")
-from engines import CamofoxEngine  # noqa: E402
-from agent import BrowserAgent, UNTRUSTED_BANNER  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from agent import BrowserAgent
+from engines import CamofoxEngine
 
 ENGINE = CamofoxEngine(user_id="canary")
 TITLES = re.compile(r'heading "full details of ([^"]+)"')
