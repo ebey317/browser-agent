@@ -17,7 +17,7 @@ def fake(*replies):
 def test_valid_click_is_returned_without_thought_executed():
     f = d.make_decide_fn("g", chat=fake('{"kind":"click","target":"42","thought":"go"}'))
     a = f("- button \"Go\" (bid=42)", [])
-    assert a["kind"] == "click" and a["target"] == "42"
+    assert a["kind"] == "click" and a["target"] == "bid:42"
 
 
 def test_done_returns_none():
@@ -97,3 +97,10 @@ def test_remote_http_endpoint_refused(monkeypatch):
         d._endpoint()
     monkeypatch.setenv("BA_LLM_BASE", "http://localhost:11434/v1")
     assert d._endpoint()[0].startswith("http://localhost")
+
+
+@pytest.mark.parametrize("raw,want", [("42", "bid:42"), ("bid=42", "bid:42"), ("bid:42", "bid:42"),
+                                      ("Sign in", "Sign in")])
+def test_target_normalised_to_engine_format(raw, want):
+    f = d.make_decide_fn("g", chat=fake(json.dumps({"kind": "click", "target": raw})))
+    assert f("s", [])["target"] == want

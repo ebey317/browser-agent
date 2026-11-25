@@ -87,6 +87,9 @@ def _parse(text: str) -> dict:
     if kind not in ALLOWED_KINDS:
         raise ValueError(f"kind {kind!r} not one of {ALLOWED_KINDS}")
     target = str(obj.get("target", "") or "")
+    m = re.fullmatch(r"\s*(?:bid\s*[:=]\s*)?(\d+)\s*", target, re.I)
+    if m:                       # the engine resolves "bid:<n>", not a bare number
+        target = f"bid:{m.group(1)}"
     value = obj.get("value")
     value = None if value in (None, "") else str(value)
     if kind == "navigate":
