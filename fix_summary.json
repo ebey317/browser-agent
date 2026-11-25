@@ -1,4 +1,1 @@
-{
-  "summary": "Fix docstring typo and add get_current_tab() engine interface",
-  "verification_blocked": ""
-}
+{"summary": "Fixed dispatch_input param, UI title, agent tab tracking, docstring dash"}

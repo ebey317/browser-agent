@@ -1,0 +1,52 @@
+{
+  "findings": [
+    {
+      "id": "dispatch_input-ignores-engine-param",
+      "severity": "error",
+      "file": "watch/server.py",
+      "line": 69,
+      "description": "The `dispatch_input` function (lines 58-95) accepts an `engine` parameter but ignores it on line 69, using the global `ENGINE` instead: `ws = _page_ws(ENGINE, tab)`. The function is called from `do_POST` (line 239) with `ENGINE` as the argument, so it works for the default case, but the parameter is misleading and would break if a different engine were passed. The function is also hardcoded to use `CdpPage` (CDP-only) via `_page_ws`, so it only works with ChromeCdpEngine regardless.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "ui-title-mismatch",
+      "severity": "warning",
+      "file": "watch/server.py",
+      "line": 162,
+      "description": "The embedded UI HTML (line 162) shows `<h1>Browser Agent \u2014 Camofox</h1>` but the default engine on line 31 is `ChromeCdpEngine()`. This is misleading for users who see the UI. The title should reflect the actual engine or be generic.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "agentrunner-last_tab-engine-specific",
+      "severity": "warning",
+      "file": "watch/server.py",
+      "line": 50,
+      "description": "In `AgentRunner.run()` (line 50), the code accesses `agent.engine._last_tab` which only exists on `ChromeCdpEngine` (line 81 of engines/chrome_cdp.py). `CamofoxEngine` and `SenseiEngine` in engines/__init__.py do not have this attribute. If the global `ENGINE` is swapped to a different engine, the tab tracking for screenshots will fail silently (falling back to `STATE[\"tab\"]` which may be stale). This is a design coupling between the watch server and ChromeCdpEngine.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "docstring-corrupted-em-dash",
+      "severity": "info",
+      "file": "watch/server.py",
+      "line": 2,
+      "description": "The module docstring on line 2 contains a corrupted em dash character: `Watch server \u00e2\u20ac\u201c see the agent's browser` (rendered as `M-bM-^@M-^T` in cat -A). This is a pre-existing encoding issue from the base commit, not introduced by this change. Should be `Watch server \u2014 see the agent's browser` or `Watch server - see the agent's browser`.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    }
+  ],
+  "reviewed_paths": [
+    "README.md",
+    "engines/__init__.py",
+    "engines/chrome_cdp.py",
+    "watch/server.py",
+    "agent.py"
+  ],
+  "tested": [],
+  "testing_summary": "Static analysis review of changed files. Verified the get_current_tab() common interface is correctly implemented on all three engines (ChromeCdpEngine, CamofoxEngine, SenseiEngine). Verified port fix (8795\u21928901) matches README and chat_widget.html. Verified hardcoded path fix uses Pathlib. Verified CORS headers removed. Verified current_tab() uses common interface. Did not execute tests.",
+  "risk_level": "low",
+  "risk_rationale": "The change successfully addresses the critical bugs (port mismatch, hardcoded path) and implements a clean common interface for get_current_tab(). Remaining issues are minor: a misleading UI title, an unused parameter in dispatch_input (which is CDP-only by design), and a pre-existing encoding artifact. The pre-existing security items (world-writable tmp files, approval race, no auth, chrome user-data in /tmp) were acknowledged in prior rounds and remain as ask-user items requiring architectural decisions, not code defects in this change.",
+  "risk_scope": "source-or-external"
+}

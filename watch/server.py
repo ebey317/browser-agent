@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch server — see the agent's browser live, take over, hand back.
+"""Watch server - see the agent's browser live, take over, hand back.
 
     python3 watch/server.py            # serves http://localhost:8901
 
@@ -47,7 +47,7 @@ class AgentRunner(threading.Thread):
         try:
             agent.run(self.task_url)
         finally:
-            STATE["tab"] = getattr(agent.engine, "_last_tab", None) or STATE["tab"]
+            STATE["tab"] = agent.engine.get_current_tab() or STATE["tab"]
             STATE["events"] = [e.__dict__ for e in agent.events]
             STATE["running"] = False
 
@@ -55,15 +55,14 @@ class AgentRunner(threading.Thread):
 _last_tab_cache = {"tab": None, "ts": 0.0}
 
 
-def dispatch_input(engine, tab, b: dict) -> dict:
-    """Human remote control: real Input-domain events in the real browser.
+def dispatch_input(tab, b: dict) -> dict:
+    """Human remote control: real Input-domain events in the real browser (CDP only).
 
     Coords arrive in screenshot pixels; scale to CSS px via Page.getLayoutMetrics.
     Only enabled while takeover is active — the wheel belongs to the human.
     """
     if not TAKEOVER_FILE.exists():
         return {"skipped": "take takeover first (✊)"}
-    from engines._ws_cdp import CdpPage
 
     kind = b.get("kind", "click")
     ws = _page_ws(ENGINE, tab)
@@ -159,7 +158,7 @@ UI = """<!doctype html><html><head><meta charset=utf-8><title>Browser Agent — 
   #events{height:110px;overflow:auto;font:11px monospace;background:#161616;padding:6px 10px;white-space:pre-wrap}
   .on #grab{opacity:.3;pointer-events:none}
 </style></head><body>
-<header><h1>Browser Agent — Camofox</h1>
+<header><h1>Browser Agent — Watch</h1>
 <button id=grab>✊ TAKE OVER</button><button id=back>🤝 HAND BACK</button></header>
 <div id=status>connecting…</div>
 <div id=frame><img id=img alt="agent browser view"></div>
@@ -236,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/input":
             b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             try:
-                res = dispatch_input(ENGINE, STATE.get("tab") or current_tab(), b)
+                res = dispatch_input(STATE.get("tab") or current_tab(), b)
                 self._send(200, json.dumps({"ok": True, **res}).encode(), "application/json")
             except Exception as e:
                 self._send(200, json.dumps({"ok": False, "error": str(e)[:200]}).encode(), "application/json")
