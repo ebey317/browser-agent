@@ -144,8 +144,17 @@ def grant(action: dict) -> None:
         _grants[_grant_key(action)] = time.time() + GRANT_TTL_S
 
 
+def _purge_expired_grants() -> None:
+    now = time.time()
+    with _grants_lock:
+        expired = [k for k, exp in _grants.items() if exp <= now]
+        for k in expired:
+            _grants.pop(k, None)
+
+
 def consume_grant(action: dict) -> bool:
     """True once for an approved, unexpired, identical action; then it is gone."""
+    _purge_expired_grants()
     with _grants_lock:
         expires = _grants.pop(_grant_key(action), None)
     return expires is not None and time.time() <= expires

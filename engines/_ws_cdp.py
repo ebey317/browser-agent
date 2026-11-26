@@ -35,7 +35,7 @@ def page_act(page, kind: str, target: str, value: str) -> dict | None:
     Returns a dict to skip the action, or None to proceed.
     Suppression happens here, at the CDP input layer — not in the loop.
     """
-    if kind in ("click", "type", "press", "scroll", "wheel"):
+    if kind in ("click", "type", "press", "scroll", "wheel", "navigate"):
         if guard.takeover_active():
             return {"skipped": "takeover"}
         action = {"kind": kind, "target": target, "value": value}
@@ -173,4 +173,8 @@ class CdpPage:
                 "deltaX": 0, "deltaY": 600,
             })
             return {"scrolled": 600}
+        if kind == "navigate":
+            url = value or target
+            self.call("Page.navigate", {"url": url})
+            return {"navigated": url}
         raise ValueError(f"unsupported kind: {kind}")

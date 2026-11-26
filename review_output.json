@@ -1,81 +1,75 @@
 {
   "findings": [
     {
-      "id": "world-writable-tmp-files",
+      "id": "f1",
       "severity": "warning",
       "file": "agent.py",
-      "line": 23,
-      "description": "Takeover file (/tmp/browser-agent-takeover, line 23) and approval file (/tmp/browser-agent-approvals, line 24) are in /tmp, which is world-writable. Any local user can create/remove these files, causing denial of service (pausing/resuming the agent arbitrarily) or bypassing guardrails (by pre-creating approval entries). On multi-user systems this is a security boundary violation. Consider using a user-specific directory like $XDG_RUNTIME_DIR or ~/.local/state/browser-agent/ with restricted permissions.",
-      "action": "ask-user",
-      "review_scope": "source"
-    },
-    {
-      "id": "approval-file-race-condition",
-      "severity": "warning",
-      "file": "agent.py",
-      "line": 57,
-      "description": "The `_approval_granted` function (lines 57-71) polls a JSON file without atomic reads/writes or file locking. Concurrent access from the watch UI (writing approvals) and the agent (reading) can cause: (a) partial reads during write, (b) lost approvals if the file is overwritten, (c) TOCTOU where an approval appears then disappears between check and use. For a security guardrail, this weakens the approval guarantee.",
-      "action": "ask-user",
-      "review_scope": "source"
-    },
-    {
-      "id": "no-authentication-on-control-api",
-      "severity": "info",
-      "file": "watch/server.py",
-      "line": 229,
-      "description": "The watch server exposes /takeover, /release, /input, /start endpoints with no authentication (lines 229-247). Any process on localhost can control the browser, inject keystrokes/clicks, or start tasks. Since the server binds to 127.0.0.1 only (line 256), this is mitigated but still means any compromised local web app or malicious browser extension could hijack the agent. Document this threat model explicitly.",
-      "action": "ask-user",
-      "review_scope": "source"
-    },
-    {
-      "id": "chrome-user-data-dir-in-tmp",
-      "severity": "warning",
-      "file": "engines/chrome_cdp.py",
-      "line": 61,
-      "description": "The auto-launched Chrome uses `--user-data-dir=/tmp/browser-agent-chrome` (line 61), which is world-writable. Another local user could plant malicious extensions, preferences, or cookies in this profile, affecting the agent's browser session. Consider using a per-user directory with restricted permissions (e.g., $XDG_CACHE_HOME/browser-agent/chrome).",
-      "action": "ask-user",
-      "review_scope": "source"
-    },
-    {
-      "id": "dispatch-input-cdp-only",
-      "severity": "warning",
-      "file": "watch/server.py",
-      "line": 68,
-      "description": "The `dispatch_input` function (lines 58-94) and `_page_ws` helper (lines 97-99) are hardcoded to use CDP via `CdpPage` from `engines._ws_cdp`. They only work with `ChromeCdpEngine`. The global `ENGINE` on line 31 defaults to `ChromeCdpEngine()`, but if swapped to `CamofoxEngine` or `SenseiEngine`, `/input` endpoint will fail with AttributeError. The function signature was simplified (removed `engine` param) but the implementation remains engine-specific. Either document this as CDP-only or add a common `input_dispatch` interface to all engines.",
-      "action": "ask-user",
-      "review_scope": "source"
-    },
-    {
-      "id": "docstring-corrupted-em-dash",
-      "severity": "info",
-      "file": "watch/server.py",
-      "line": 2,
-      "description": "The module docstring on line 2 contains a corrupted em dash character: `Watch server - see the agent's browser` (rendered as `M-bM-^@M-^T` in cat -A). This is a pre-existing encoding issue from the base commit, not introduced by this change. Should be `Watch server — see the agent's browser` or `Watch server -- see the agent's browser`.",
+      "line": 80,
+      "description": "STOP_FILE check-then-delete race not fully fixed. The fix uses `exists()` + `unlink()` with try/except, but a TOCTOU race remains between the check and deletion. Python 3.8+ `Path.unlink(missing_ok=True)` would be truly atomic. The current code is functionally acceptable (worst case: file recreated, caught next loop) but doesn't match the driver instruction to 'use unlink(missing_ok=True) semantics'.",
       "action": "auto-fix",
       "review_scope": "source"
     },
     {
-      "id": "readme-websockets-dependency",
+      "id": "f2",
+      "severity": "warning",
+      "file": "engines/guard.py",
+      "line": 133,
+      "description": "Grant memory leak: expired grants that are never consumed accumulate indefinitely in the `_grants` dict. `consume_grant` pops only on exact match, `revoke_grants` clears all, but expired entries for actions that timed out waiting for approval are never removed. With default GRANT_TTL_S=120 and short agent runs this may not manifest, but it's a leak in the added grant machinery.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "f3",
+      "severity": "error",
+      "file": "engines/_ws_cdp.py",
+      "line": 32,
+      "description": "Engine gate doesn't enforce guard for navigate actions. `page_act` only checks guard for click/type/press/scroll/wheel, returning early for navigate. Meanwhile `_act_inner` doesn't implement navigate (raises ValueError), so navigate actions would crash. The agent loop does call `is_guarded` for navigate before acting, but the guard.py docstring states 'the engine-side check is authoritative — engine divergence can no longer bypass the gates.' This gap means navigate actions bypass the engine gate entirely. Also contradicts user intent requirement 'guard any navigation that is not plain http(s)' at the engine layer.",
+      "action": "ask-user",
+      "review_scope": "source"
+    },
+    {
+      "id": "f4",
       "severity": "info",
-      "file": "README.md",
-      "line": 14,
-      "description": "README line 14 describes `_ws_cdp.py` as 'minimal sync CDP-over-websocket client (AX reads, Input-domain actions; requires `websockets`)'. This correctly notes the `websockets` dependency (unlike the previous 'dependency-free' claim). However, the engine contract in engines/__init__.py (line 11) states 'engines expose NO raw DOM and NO in-page JS to the agent' but `_ws_cdp.py` uses `websockets.sync.client` which is a third-party runtime dependency. This is accurately documented now but worth noting for users evaluating the stack.",
+      "file": "engines/_ws_cdp.py",
+      "line": 42,
+      "description": "Double element_facts fetch: agent.py (lines 99-105) calls element_facts for click/type before is_guarded, then page_act (line 42) calls it again for the same action. Redundant but safe (fail-closed both ways). Could be optimized by passing facts through, but not a correctness issue.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f5",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 76,
+      "description": "OPAQUE_TARGET regex (r'^\\s*(bid\\s*[:=]\\s*)?\\d+\\s*$') does not match 'bid 1' (space separator without colon/equals). However, decide_llm.py normalizes all numeric targets to 'bid:N' format (lines 90-92), so this only matters if actions come from an untrusted/unnormalized source. The guard's fail-closed design means unrecognized formats are guarded anyway. Pre-existing, noted in prior review.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f6",
+      "severity": "info",
+      "file": "engines/_ws_cdp.py",
+      "line": 96,
+      "description": "element_facts catches all exceptions (Exception) and returns None for fail-closed behavior. This is intentional per the comment but could mask programming errors (e.g., typos in CDP method names). The broad catch is acceptable for a fail-closed security boundary but worth noting. Pre-existing, noted in prior review.",
       "action": "no-op",
       "review_scope": "source"
     }
   ],
   "reviewed_paths": [
-    "README.md",
     "agent.py",
-    "watch/server.py",
+    "decide_llm.py",
+    "engines/guard.py",
     "engines/chrome_cdp.py",
-    "engines/__init__.py",
     "engines/_ws_cdp.py",
-    "watch/chat_widget.html"
+    "tests/test_guard_element.py",
+    "tests/test_gates.py",
+    "tests/test_decide_llm.py",
+    "tests/test_approval_token.py",
+    "engines/__init__.py"
   ],
   "tested": [],
-  "testing_summary": "No tests executed during review. Review was static analysis of source code changes only.",
+  "testing_summary": "Reviewed all test files for coverage of guard logic, grants, element classification, and decide_llm validation. Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests). The new regression test test_empty_element_facts_bypasses_opaque_target_guard correctly exercises the fail-closed fix by calling the public is_guarded function with empty/whitespace element facts.",
   "risk_level": "medium",
-  "risk_rationale": "The change introduces a common `get_current_tab()` interface across all engines (good), fixes the hardcoded path and port mismatch (good), but leaves several pre-existing security concerns unaddressed: world-writable temp files for takeover/approvals, race condition in approval polling, no authentication on control API, and Chrome user-data-dir in /tmp. The dispatch_input function is now more tightly coupled to CDP despite the engine-agnostic refactoring. These are known risks the user has chosen not to fix in prior rounds, but they remain reachable.",
+  "risk_rationale": "The three stated gaps are correctly closed: import order fixed, real element classification with fail-closed typing guards implemented, and single-use action-bound grants prevent double-gating. However, the engine gate doesn't enforce guards for navigate actions (a documented action kind), causing both a defense-in-depth gap and a crash bug in _act_inner. Grant memory leak and incomplete STOP_FILE race fix are minor but should be addressed.",
   "risk_scope": "source-or-external"
 }

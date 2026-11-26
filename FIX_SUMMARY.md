@@ -1,23 +1,23 @@
 # Fix Summary
 
-## Changes Made
+Applied three fixes from review findings:
 
-### 1. agent.py
-- **Removed unused GUARD_PATTERNS** (f1): Deleted the duplicate guard patterns list since engines/guard.py owns the canonical patterns.
-- **STOP_FILE now uses shared RUN_DIR** (f2): Changed from hardcoded `/tmp/browser-agent-stop` to `_guard.RUN_DIR / "stop"`, keeping the `BA_STOP_FILE` env override.
-- **Fixed STOP_FILE race condition**: Uses `exists()` + `unlink()` with proper exception handling instead of check-then-delete race.
+## 1. STOP_FILE race fix (agent.py:80-84)
+- **Invariant**: Stop signal must be consumed atomically — check-then-delete has TOCTOU window
+- **Fix**: Use `Path.unlink()` with `FileNotFoundError` catch; only triggers stop if file actually existed
+- **Before**: `exists()` + `unlink()` with broad `except OSError` — race window, always executed else block
+- **After**: Atomic unlink, stop only on successful deletion
 
-### 2. engines/guard.py
-- **Removed site-allow feature** (f3): Deleted `SITE_ALLOW_FILE`, `site_allow_check`, `remember_site_allow`, `forget_site_allow`, and associated comments. This was unused dead code outside the stated intent.
-- **Files created with 0o600 permissions** (f4): 
-  - `atomic_json()` now writes temp files with `os.open(..., 0o600)`
-  - `take_over()` writes TAKEOVER_FILE with `os.open(..., 0o600)`
-- **Fixed fail-closed bypass** (user-1): `is_guarded()` now normalizes `element` parameter - `None` and empty/whitespace-only strings are treated identically as "unknown", ensuring opaque-target guard fires correctly.
+## 2. Grant memory leak fix (engines/guard.py:147-152)
+- **Invariant**: Expired grants must not accumulate indefinitely in `_grants` dict
+- **Fix**: Added `_purge_expired_grants()` called at start of `consume_grant()` to remove all expired entries
+- **Before**: Only exact-match grants removed via `pop()`; timed-out grants leaked forever
+- **After**: All expired grants cleaned on every `consume_grant()` call
 
-### 3. tests/test_guard_element.py
-- **Added regression test** `test_empty_element_facts_bypasses_opaque_target_guard`: Verifies that `element=''` and `element=' '` for a type action on `bid:3` are guarded (fail-closed), while identified safe elements are not.
+## 3. Navigate action gate fix (engines/_ws_cdp.py:32-45, 170-172)
+- **Invariant**: Engine gate must enforce guard for ALL action kinds including navigate (docstring: "engine-side check is authoritative")
+- **Fix**: Added "navigate" to guarded kinds in `page_act()`; implemented `_act_inner` navigate via `Page.navigate` CDP
+- **Before**: Navigate bypassed engine gate entirely; `_act_inner` raised ValueError
+- **After**: Non-http(s) navigation guarded at engine layer; http(s) allowed; grants work for navigate
 
-## Verification
-- All 44 tests pass (excluding `tests/canary_indeed.py`)
-- No `__pycache__` or `run/` directories left in tree
-- BA_RUNTIME_DIR pointed at temp dir during test runs
+All 44 tests pass (excluding test_thread_contract.py per intent).
