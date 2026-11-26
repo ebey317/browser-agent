@@ -140,6 +140,7 @@ def _grant_key(action: dict) -> str:
 
 
 def grant(action: dict) -> None:
+    _purge_expired_grants()
     with _grants_lock:
         _grants[_grant_key(action)] = time.time() + GRANT_TTL_S
 

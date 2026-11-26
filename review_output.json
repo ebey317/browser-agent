@@ -4,8 +4,8 @@
       "id": "f1",
       "severity": "warning",
       "file": "agent.py",
-      "line": 80,
-      "description": "STOP_FILE check-then-delete race not fully fixed. The fix uses `exists()` + `unlink()` with try/except, but a TOCTOU race remains between the check and deletion. Python 3.8+ `Path.unlink(missing_ok=True)` would be truly atomic. The current code is functionally acceptable (worst case: file recreated, caught next loop) but doesn't match the driver instruction to 'use unlink(missing_ok=True) semantics'.",
+      "line": 81,
+      "description": "STOP_FILE check-then-delete race not fully fixed. The fix uses `STOP_FILE.unlink()` with `FileNotFoundError` catch, but a TOCTOU window remains between successful unlink and the next loop iteration. Python 3.8+ `Path.unlink(missing_ok=True)` would be truly atomic (no exception, no race). The current code is functionally acceptable (worst case: file recreated, caught next loop) but doesn't use the modern atomic API.",
       "action": "auto-fix",
       "review_scope": "source"
     },
@@ -13,26 +13,26 @@
       "id": "f2",
       "severity": "warning",
       "file": "engines/guard.py",
-      "line": 133,
-      "description": "Grant memory leak: expired grants that are never consumed accumulate indefinitely in the `_grants` dict. `consume_grant` pops only on exact match, `revoke_grants` clears all, but expired entries for actions that timed out waiting for approval are never removed. With default GRANT_TTL_S=120 and short agent runs this may not manifest, but it's a leak in the added grant machinery.",
+      "line": 147,
+      "description": "Grant memory leak only partially fixed: `_purge_expired_grants()` is only called in `consume_grant()`, which is only invoked when `is_guarded()` returns True. If approved grants exist but no guarded actions are attempted for a while (e.g., agent idle on safe pages), expired grants accumulate indefinitely. Should also purge in `grant()` and `revoke_grants()` for completeness.",
       "action": "auto-fix",
       "review_scope": "source"
     },
     {
       "id": "f3",
-      "severity": "error",
+      "severity": "info",
       "file": "engines/_ws_cdp.py",
-      "line": 32,
-      "description": "Engine gate doesn't enforce guard for navigate actions. `page_act` only checks guard for click/type/press/scroll/wheel, returning early for navigate. Meanwhile `_act_inner` doesn't implement navigate (raises ValueError), so navigate actions would crash. The agent loop does call `is_guarded` for navigate before acting, but the guard.py docstring states 'the engine-side check is authoritative — engine divergence can no longer bypass the gates.' This gap means navigate actions bypass the engine gate entirely. Also contradicts user intent requirement 'guard any navigation that is not plain http(s)' at the engine layer.",
-      "action": "ask-user",
+      "line": 42,
+      "description": "Double element_facts fetch: agent.py (lines 100-105) calls element_facts for click/type before is_guarded, then page_act (line 42) calls it again for the same action. Redundant CDP round-trip but safe (fail-closed both ways). Could be optimized by passing facts through the engine act() call, but not a correctness issue.",
+      "action": "no-op",
       "review_scope": "source"
     },
     {
       "id": "f4",
       "severity": "info",
       "file": "engines/_ws_cdp.py",
-      "line": 42,
-      "description": "Double element_facts fetch: agent.py (lines 99-105) calls element_facts for click/type before is_guarded, then page_act (line 42) calls it again for the same action. Redundant but safe (fail-closed both ways). Could be optimized by passing facts through, but not a correctness issue.",
+      "line": 96,
+      "description": "element_facts catches all exceptions (Exception) and returns None for fail-closed behavior. This is intentional per the comment but could mask programming errors (e.g., typos in CDP method names). The broad catch is acceptable for a fail-closed security boundary but worth noting.",
       "action": "no-op",
       "review_scope": "source"
     },
@@ -40,17 +40,17 @@
       "id": "f5",
       "severity": "info",
       "file": "engines/guard.py",
-      "line": 76,
-      "description": "OPAQUE_TARGET regex (r'^\\s*(bid\\s*[:=]\\s*)?\\d+\\s*$') does not match 'bid 1' (space separator without colon/equals). However, decide_llm.py normalizes all numeric targets to 'bid:N' format (lines 90-92), so this only matters if actions come from an untrusted/unnormalized source. The guard's fail-closed design means unrecognized formats are guarded anyway. Pre-existing, noted in prior review.",
+      "line": 90,
+      "description": "OPAQUE_TARGET regex (r'^\\s*(bid\\s*[:=]\\s*)?\\d+\\s*$') does not match 'bid 1' (space separator without colon/equals). However, decide_llm.py normalizes all numeric targets to 'bid:N' format (lines 90-92), so this only matters if actions come from an untrusted/unnormalized source. The guard's fail-closed design means unrecognized formats are guarded anyway.",
       "action": "no-op",
       "review_scope": "source"
     },
     {
       "id": "f6",
       "severity": "info",
-      "file": "engines/_ws_cdp.py",
-      "line": 96,
-      "description": "element_facts catches all exceptions (Exception) and returns None for fail-closed behavior. This is intentional per the comment but could mask programming errors (e.g., typos in CDP method names). The broad catch is acceptable for a fail-closed security boundary but worth noting. Pre-existing, noted in prior review.",
+      "file": "agent.py",
+      "line": 26,
+      "description": "STOP_FILE now correctly uses `_guard.RUN_DIR` for consistency with TAKEOVER_FILE/APPROVAL_FILE, but the env var override `BA_STOP_FILE` allows arbitrary paths. If set to a world-writable location, it could allow denial-of-service by other users. Low risk since BA_STOP_FILE is an operator-controlled setting.",
       "action": "no-op",
       "review_scope": "source"
     }
@@ -58,18 +58,18 @@
   "reviewed_paths": [
     "agent.py",
     "decide_llm.py",
-    "engines/guard.py",
-    "engines/chrome_cdp.py",
     "engines/_ws_cdp.py",
-    "tests/test_guard_element.py",
-    "tests/test_gates.py",
-    "tests/test_decide_llm.py",
+    "engines/chrome_cdp.py",
+    "engines/guard.py",
+    "engines/__init__.py",
     "tests/test_approval_token.py",
-    "engines/__init__.py"
+    "tests/test_decide_llm.py",
+    "tests/test_gates.py",
+    "tests/test_guard_element.py"
   ],
   "tested": [],
-  "testing_summary": "Reviewed all test files for coverage of guard logic, grants, element classification, and decide_llm validation. Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests). The new regression test test_empty_element_facts_bypasses_opaque_target_guard correctly exercises the fail-closed fix by calling the public is_guarded function with empty/whitespace element facts.",
-  "risk_level": "medium",
-  "risk_rationale": "The three stated gaps are correctly closed: import order fixed, real element classification with fail-closed typing guards implemented, and single-use action-bound grants prevent double-gating. However, the engine gate doesn't enforce guards for navigate actions (a documented action kind), causing both a defense-in-depth gap and a crash bug in _act_inner. Grant memory leak and incomplete STOP_FILE race fix are minor but should be addressed.",
+  "testing_summary": "Reviewed all test files for coverage of guard logic, grants, element classification, and decide_llm validation. Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests). The regression test test_empty_element_facts_bypasses_opaque_target_guard correctly exercises the fail-closed fix by calling the public is_guarded function with empty/whitespace element facts. All tests verify observable behavior through public APIs, not implementation internals.",
+  "risk_level": "low",
+  "risk_rationale": "The change correctly implements all three stated goals: fixed import order in agent.py, added real element classification with fail-closed typing guards (ELEMENT_PATTERNS, OPAQUE_TARGET, element_facts), and introduced single-use action-bound grants to prevent double-gating. The engine gate now enforces guards for navigate actions. Remaining issues are minor: STOP_FILE unlink could use missing_ok=True for true atomicity, grant purge only runs on consume_grant, double element_facts fetch is redundant but safe, and broad exception catch/regex limitation are accepted trade-offs for fail-closed design. No authorization bypasses or privacy leaks found.",
   "risk_scope": "source-or-external"
 }

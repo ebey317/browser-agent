@@ -77,11 +77,8 @@ class BrowserAgent:
         self.log("nav", url=url, tab=tab)
         history: list[dict] = []
         for step in range(self.max_steps):
-            try:
-                STOP_FILE.unlink()
-            except FileNotFoundError:
-                pass  # file didn't exist, continue
-            else:
+            if STOP_FILE.exists():
+                STOP_FILE.unlink(missing_ok=True)
                 self.log("stop", step=step)
                 return {"ok": False, "reason": "stopped", "tab": tab,
                         "events": [e.__dict__ for e in self.events]}
