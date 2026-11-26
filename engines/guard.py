@@ -102,6 +102,7 @@ def is_guarded(action: dict, element: str | None = None) -> bool:
     facts) is guarded, because a numeric id carries no word to match and that
     is exactly how a password field would slip past a text-only check.
     """
+    _purge_expired_grants()
     # Normalize: None and empty/whitespace-only element facts = unknown
     if element is not None:
         element = element.strip()

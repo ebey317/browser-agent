@@ -2,10 +2,10 @@
   "findings": [
     {
       "id": "f1",
-      "severity": "warning",
+      "severity": "error",
       "file": "agent.py",
-      "line": 81,
-      "description": "STOP_FILE check-then-delete race not fully fixed. The fix uses `STOP_FILE.unlink()` with `FileNotFoundError` catch, but a TOCTOU window remains between successful unlink and the next loop iteration. Python 3.8+ `Path.unlink(missing_ok=True)` would be truly atomic (no exception, no race). The current code is functionally acceptable (worst case: file recreated, caught next loop) but doesn't use the modern atomic API.",
+      "line": 80,
+      "description": "STOP_FILE check-then-delete race: code uses `STOP_FILE.exists()` followed by `STOP_FILE.unlink(missing_ok=True)`. This has a TOCTOU window — another process could recreate the file between the check and unlink, causing the stop signal to be missed (unlink succeeds silently, loop continues). The fix should use try/except FileNotFoundError without a prior exists check.",
       "action": "auto-fix",
       "review_scope": "source"
     },
@@ -13,22 +13,49 @@
       "id": "f2",
       "severity": "warning",
       "file": "engines/guard.py",
-      "line": 147,
-      "description": "Grant memory leak only partially fixed: `_purge_expired_grants()` is only called in `consume_grant()`, which is only invoked when `is_guarded()` returns True. If approved grants exist but no guarded actions are attempted for a while (e.g., agent idle on safe pages), expired grants accumulate indefinitely. Should also purge in `grant()` and `revoke_grants()` for completeness.",
+      "line": 142,
+      "description": "Grant memory leak only partially fixed: `_purge_expired_grants()` is called in `grant()` and `consume_grant()`, but expired grants accumulate if the agent is idle on safe pages (no guarded actions) for longer than GRANT_TTL_S. The leak is bounded (only human-approved guarded actions create grants) but nonzero. Should also call `_purge_expired_grants()` in `is_guarded()` for completeness.",
       "action": "auto-fix",
       "review_scope": "source"
     },
     {
       "id": "f3",
-      "severity": "info",
-      "file": "engines/_ws_cdp.py",
-      "line": 42,
-      "description": "Double element_facts fetch: agent.py (lines 100-105) calls element_facts for click/type before is_guarded, then page_act (line 42) calls it again for the same action. Redundant CDP round-trip but safe (fail-closed both ways). Could be optimized by passing facts through the engine act() call, but not a correctness issue.",
-      "action": "no-op",
+      "severity": "warning",
+      "file": "tests/test_approval_token.py",
+      "line": 1,
+      "description": "No test covers navigate action grant flow. The grant mechanism is generic and navigate is now guarded at the engine layer, but tests only exercise type/click grants. A regression where navigate grants fail would not be caught.",
+      "action": "ask-user",
       "review_scope": "source"
     },
     {
       "id": "f4",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 72,
+      "description": "atomic_json uses deterministic tmp filename (path.with_suffix('.tmp')) with O_EXCL. Under concurrent writers (not current architecture but possible if watch server scales), one writer fails with FileExistsError. The exception handler unlinks and re-raises; callers don't handle this. Low risk since watch server is single-writer.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f5",
+      "severity": "info",
+      "file": "engines/guard.py",
+      "line": 18,
+      "description": "RUN_DIR mkdir+chmod has a brief race window where another process could create files before chmod(0o700). Low risk since BA_RUNTIME_DIR/XDG_RUNTIME_DIR is per-user.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f6",
+      "severity": "info",
+      "file": "engines/_ws_cdp.py",
+      "line": 38,
+      "description": "page_act guards navigate/click/type/press/scroll/wheel but not 'wait' (allowed in decide_llm). 'wait' is low-risk (sleep only) so this is acceptable defense-in-depth.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f7",
       "severity": "info",
       "file": "engines/_ws_cdp.py",
       "line": 96,
@@ -37,7 +64,7 @@
       "review_scope": "source"
     },
     {
-      "id": "f5",
+      "id": "f8",
       "severity": "info",
       "file": "engines/guard.py",
       "line": 90,
@@ -46,7 +73,16 @@
       "review_scope": "source"
     },
     {
-      "id": "f6",
+      "id": "f9",
+      "severity": "info",
+      "file": "agent.py",
+      "line": 99,
+      "description": "Double element_facts fetch: agent.py (lines 99-105) calls element_facts for click/type before is_guarded, then page_act (engines/_ws_cdp.py:42) calls it again for the same action. Redundant CDP round-trip but safe (fail-closed both ways). Could be optimized by passing facts through the engine act() call, but not a correctness issue.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "f10",
       "severity": "info",
       "file": "agent.py",
       "line": 26,
@@ -58,18 +94,18 @@
   "reviewed_paths": [
     "agent.py",
     "decide_llm.py",
+    "engines/guard.py",
     "engines/_ws_cdp.py",
     "engines/chrome_cdp.py",
-    "engines/guard.py",
     "engines/__init__.py",
-    "tests/test_approval_token.py",
-    "tests/test_decide_llm.py",
+    "tests/test_guard_element.py",
     "tests/test_gates.py",
-    "tests/test_guard_element.py"
+    "tests/test_approval_token.py",
+    "tests/test_decide_llm.py"
   ],
   "tested": [],
-  "testing_summary": "Reviewed all test files for coverage of guard logic, grants, element classification, and decide_llm validation. Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests). The regression test test_empty_element_facts_bypasses_opaque_target_guard correctly exercises the fail-closed fix by calling the public is_guarded function with empty/whitespace element facts. All tests verify observable behavior through public APIs, not implementation internals.",
-  "risk_level": "low",
-  "risk_rationale": "The change correctly implements all three stated goals: fixed import order in agent.py, added real element classification with fail-closed typing guards (ELEMENT_PATTERNS, OPAQUE_TARGET, element_facts), and introduced single-use action-bound grants to prevent double-gating. The engine gate now enforces guards for navigate actions. Remaining issues are minor: STOP_FILE unlink could use missing_ok=True for true atomicity, grant purge only runs on consume_grant, double element_facts fetch is redundant but safe, and broad exception catch/regex limitation are accepted trade-offs for fail-closed design. No authorization bypasses or privacy leaks found.",
+  "testing_summary": "All 44 tests pass (excluding test_thread_contract.py per intent). Tests use fake models/pages and monkeypatch shared state; no browser integration tests exist (expected for unit tests). Core guard logic, grants, element classification, and decide_llm validation are covered. Navigate grant flow is not tested.",
+  "risk_level": "medium",
+  "risk_rationale": "The STOP_FILE TOCTOU bug (f1) is a correctness issue that could silently drop stop signals. The grant memory leak (f2) is bounded but real. All three user intent goals are correctly implemented: import fix, real element classification with fail-closed typing guards, and single-use action-bound grants. No authorization bypasses or privacy leaks found.",
   "risk_scope": "source-or-external"
 }

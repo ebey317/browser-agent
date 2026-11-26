@@ -124,3 +124,19 @@ def test_loop_takeover_during_approval_wait_voids_the_approval(monkeypatch):
     monkeypatch.setattr(agent, "_wait_for_release", lambda poll=1.0: None)
     eng = run_loop(monkeypatch, approved=True)
     assert eng.performed == []
+
+
+NAV = {"kind": "navigate", "target": "file:///etc/passwd", "value": "file:///etc/passwd"}
+
+
+def test_navigate_guarded_without_grant_is_skipped():
+    page = Page()
+    result = _ws_cdp.page_act(page, NAV["kind"], NAV["target"], NAV["value"])
+    assert result == {"skipped": "guarded", "requires": "human approval"}
+
+
+def test_navigate_grant_lets_exactly_that_action_through_once():
+    guard.grant(NAV)
+    page = Page()
+    assert _ws_cdp.page_act(page, NAV["kind"], NAV["target"], NAV["value"]) is None
+    assert _ws_cdp.page_act(page, NAV["kind"], NAV["target"], NAV["value"]) == {"skipped": "guarded", "requires": "human approval"}

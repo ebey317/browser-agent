@@ -1,1 +1,1 @@
-{"summary": "Fix grant memory leak and STOP_FILE atomic unlink", "verification_blocked": ""}
+{"summary": "Fixed STOP_FILE TOCTOU race, grant memory leak, and added navigate grant tests", "verification_blocked": null}
