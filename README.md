@@ -21,7 +21,7 @@ tests/canary_indeed.py
 
 - **AX-only reads.** The agent sees the accessibility-tree snapshot — never raw DOM, never in-page JS. Every snapshot is prefixed `[UNTRUSTED PAGE CONTENT …]`.
 - **Takeover flag.** `/tmp/browser-agent-takeover` — while it exists the loop pauses before every action and the human's clicks/wheel/keys (via `/input`) pass into the real browser. Delete it (🤝) and the agent resumes from the current page.
-- **Guardrails.** Password/checkout/payment/file:// actions queue for explicit human approval (`/tmp/browser-agent-approvals`) before firing.
+- **Guardrails.** The engine classifies the REAL element (input type, autocomplete, AX role/name) via `DOM.describeNode` + AX tree — not words in the action text. Typing into an unidentified target (bare `bid:N`) is guarded fail-closed. Navigation to non-http(s) URLs (file:, chrome:, javascript:, data:) is guarded. Approved actions receive a single-use, action-bound grant (kind, target, value) with short TTL; grants are revoked on takeover.
 - **Engine split.** Plain Chromium gets fingerprinted by Cloudflare-class walls in seconds (proven); Camofox defeats them (proven on Indeed). Default = Chromium, opt-in = Camofox.
 
 ## Run
