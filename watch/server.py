@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Watch server - see the agent's browser live, take over, hand back.
+"""Watch server — see the agent's browser live, take over, hand back.
 
     python3 watch/server.py            # serves http://localhost:8901
+
+POST /start requires Authorization: Bearer <BA_RUN_TOKEN> (at least 32 chars)
+and JSON {"task": "user's goal", "url": "https://..."}. It runs the optional
+BA_LLM_* model adapter, NOT the existing Hermes conversational model. Missing
+token configuration disables /start. Legacy viewing/control endpoints still
+need the separate security integration; do not expose this service publicly.
 
 Endpoints:
     GET  /            the UI (live screenshot + status + buttons)
@@ -13,56 +19,130 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent import TAKEOVER_FILE, BrowserAgent
-from engines.chrome_cdp import ChromeCdpEngine
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent import TAKEOVER_FILE, BrowserAgent  # noqa: E402
+from decide_llm import make_decide_fn  # noqa: E402
+from engines import (
+    CamofoxEngine,  # noqa: E402
+    guard,  # noqa: E402
+)
+from engines.chrome_cdp import ChromeCdpEngine  # noqa: E402
+import approvals  # noqa: E402  (watch/approvals.py: pending guard requests + human decision)
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8901
-STATE = {"events": [], "snapshot": "", "tab": None, "running": False, "task": ""}
+PORT = int(os.environ.get("BA_WATCH_PORT", "8901"))
+STATE = {"events": [], "snapshot": "", "tab": None, "running": False,
+         "task": "", "status": "idle", "error": None}
+STATE_LOCK = threading.RLock()
 
-ENGINE = ChromeCdpEngine()  # lightweight default; CamofoxEngine(user_id="watch") for bot-walled sites
+ENGINE = ChromeCdpEngine()
+CAMO = CamofoxEngine(user_id="watch")
+STATE.setdefault("camofox_tab", None)  # lightweight default; CamofoxEngine(user_id="watch") for bot-walled sites
 BA_TAKEOVER = TAKEOVER_FILE
 
 
+class LiveAgent(BrowserAgent):
+    """Publish task identity and events before asking the model for an action."""
+
+    def log(self, kind, **detail):
+        event = super().log(kind, **detail)
+        with STATE_LOCK:
+            if kind == "nav":
+                STATE["tab"] = detail.get("tab")
+            STATE.setdefault("events", []).append(event.__dict__)
+        return event
+
+
 class AgentRunner(threading.Thread):
-    """Runs a real agent task; publishes its events to STATE."""
+    """One explicitly started task. The captured engine owns its tab throughout."""
 
     def __init__(self, task_url: str, decide_fn):
         super().__init__(daemon=True)
         self.task_url = task_url
         self.decide_fn = decide_fn
+        self.engine = ENGINE
 
     def run(self):
-        STATE["running"] = True
-        agent = BrowserAgent(ENGINE, self.decide_fn, max_steps=20)
+        with STATE_LOCK:
+            STATE.update(running=True, status="running", error=None)
+        agent = None
         try:
-            agent.run(self.task_url)
+            agent = LiveAgent(self.engine, self.decide_fn, max_steps=20)
+            result = agent.run(self.task_url)
+            status = "complete" if result.get("ok") else (
+                "stopped" if result.get("reason") == "stopped" else "failed")
+            with STATE_LOCK:
+                STATE["status"] = status
+                STATE["error"] = None if status != "failed" else result.get("reason", "task_failed")
+            if status != "complete":
+                agent.log(status, reason=STATE["error"])
+        except Exception as exc:
+            # No raw provider/page exception text: it can contain secrets or URLs.
+            with STATE_LOCK:
+                STATE.update(status="failed", error=type(exc).__name__)
+            if agent is not None:
+                agent.log("failed", error=type(exc).__name__)
+            else:
+                with STATE_LOCK:
+                    STATE["events"].append({"ts": time.time(), "kind": "failed",
+                                            "detail": {"error": type(exc).__name__}})
         finally:
-            STATE["tab"] = agent.engine.get_current_tab() or STATE["tab"]
-            STATE["events"] = [e.__dict__ for e in agent.events]
-            STATE["running"] = False
+            with STATE_LOCK:
+                STATE["running"] = False
+
+
+def start_task(body):
+    """Reserve the single task slot before starting a thread; never queue secretly."""
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "expected_object"}
+    task, url = body.get("task"), body.get("url")
+    if not isinstance(task, str) or not task.strip() or len(task) > 8000:
+        return 400, {"ok": False, "error": "task_required_max_8000_chars"}
+    if not isinstance(url, str) or len(url) > 8192:
+        return 400, {"ok": False, "error": "http_url_required"}
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("invalid URL")
+    except ValueError:
+        return 400, {"ok": False, "error": "http_url_required"}
+    with STATE_LOCK:
+        if STATE["running"]:
+            return 409, {"ok": False, "error": "task_already_running"}
+        try:
+            decide = make_decide_fn(task.strip())
+            runner = AgentRunner(url, decide)
+            STATE.update(task=task.strip(), tab=None, events=[], running=True,
+                         status="starting", error=None)
+            runner.start()
+        except Exception as exc:
+            STATE.update(running=False, status="failed", error=type(exc).__name__)
+            return 500, {"ok": False, "error": "task_start_failed"}
+    return 202, {"ok": True, "started": True}
 
 
 _last_tab_cache = {"tab": None, "ts": 0.0}
 
 
-def dispatch_input(tab, b: dict) -> dict:
-    """Human remote control: real Input-domain events in the real browser (CDP only).
+def dispatch_input(engine, tab, b: dict) -> dict:
+    """Human remote control: real Input-domain events in the real browser.
 
     Coords arrive in screenshot pixels; scale to CSS px via Page.getLayoutMetrics.
     Only enabled while takeover is active — the wheel belongs to the human.
     """
-    if not TAKEOVER_FILE.exists():
+    if not guard.takeover_active():
         return {"skipped": "take takeover first (✊)"}
 
     kind = b.get("kind", "click")
-    ws = _page_ws(ENGINE, tab)
+    ws = _page_ws(engine, tab)
     try:
         if kind in ("click", "move"):
             x, y = _to_css(ws, b)
@@ -132,10 +212,16 @@ def demo_decide(snapshot: str, history: list) -> dict | None:
 
 
 def current_tab() -> str | None:
-    """Best-effort: the engine's current page target via common interface."""
-    if hasattr(ENGINE, "get_current_tab"):
-        return ENGINE.get_current_tab()
-    return None
+    """Best-effort: the engine's current page target."""
+    if getattr(ENGINE, "name", "") == "chrome-cdp":
+        targets = [t for t in ENGINE._targets()
+                   if t.get("url", "") not in ("about:blank",) and not t.get("url", "").startswith("chrome://")]
+        return targets[-1]["id"] if targets else None
+    with urllib.request.urlopen(
+        f"{ENGINE.base}/tabs?userId={ENGINE.user}", timeout=15
+    ) as r:
+        tabs = json.loads(r.read()).get("tabs") or []
+    return tabs[-1].get("id") if tabs else None
 
 
 def _png_for(tab: str) -> bytes | None:
@@ -155,7 +241,7 @@ UI = """<!doctype html><html><head><meta charset=utf-8><title>Browser Agent — 
   #events{height:110px;overflow:auto;font:11px monospace;background:#161616;padding:6px 10px;white-space:pre-wrap}
   .on #grab{opacity:.3;pointer-events:none}
 </style></head><body>
-<header><h1>Browser Agent — Watch</h1>
+<header><h1>Browser Agent — Camofox</h1>
 <button id=grab>✊ TAKE OVER</button><button id=back>🤝 HAND BACK</button></header>
 <div id=status>connecting…</div>
 <div id=frame><img id=img alt="agent browser view"></div>
@@ -182,47 +268,195 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
+        self.path = self.path.split("?", 1)[0]
         if self.path == "/":
             self._send(200, UI.encode())
+        elif self.path == "/widget":
+            html = (Path(__file__).parent / "thread_widget.html").read_text()
+            self._send(200, html.encode(), "text/html")
+        elif self.path == "/camframe":
+            tab = STATE.get("camofox_tab")
+            try:
+                png = CAMO.screenshot(tab) if tab else None
+                if png:
+                    STATE["last_frame"] = png
+                    STATE["last_frame_ts"] = time.time()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(png)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(png)
+                    return
+            except Exception:
+                pass
+            # engine dead: stream the last good frame and flag it, so the human
+            # sees a frozen page instead of a silent dark box
+            stale = STATE.get("last_frame")
+            if stale:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(stale)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("X-Frame-Stale", "1")
+                self.end_headers()
+                self.wfile.write(stale)
+                return
+            self._send(200, b"no camofox frame", "text/plain")
         elif self.path.startswith("/frame"):
             try:
-                tab = STATE.get("tab") or current_tab()
+                tab = STATE.get("tab")
                 png = _png_for(tab) if tab else None
                 if png:
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Length", str(len(png)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(png)
                     return
             except Exception:
                 pass
             self._send(200, b"no frame", "text/plain")
+        elif self.path == "/approvals":
+            with STATE_LOCK:
+                events = list(STATE.get("events", []))
+            body = {"pending": approvals.pending(events), "takeover": guard.takeover_active()}
+            self._send(200, json.dumps(body).encode(), "application/json")
         elif self.path == "/state":
-            st = {**STATE, "takeover": TAKEOVER_FILE.exists()}
+            with STATE_LOCK:
+                st = {k: v for k, v in STATE.items() if not k.startswith("last_frame")}
+                st = {**st, "events": list(STATE["events"]), "takeover": guard.takeover_active()}
             self._send(200, json.dumps(st).encode(), "application/json")
         else:
             self._send(404, b"nope", "text/plain")
 
     def do_POST(self):
-        if self.path == "/start":
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            url = body.get("url") or "https://news.ycombinator.com/"
-            t = AgentRunner(url, demo_decide)
-            t.start()
-            STATE["task"] = url
-            self._send(200, b'{"ok":true,"started":true}', "application/json")
+        self.path = self.path.split("?", 1)[0]
+        if self.path == "/open":
+            b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            tab = CAMO.open(b.get("url") or "https://www.reddit.com/")
+            STATE["camofox_tab"] = tab
+            STATE.setdefault("events", []).append({"ts": time.time(), "kind": "nav", "detail": {"engine": "camofox", "url": b.get("url")}})
+            self._send(200, json.dumps({"ok": True, "tab": tab}).encode(), "application/json")
+        elif self.path == "/caminput":
+            # Human input into the CAMOFOX browser. Gated on takeover (same guard).
+            b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            STATE.setdefault("events", []).append({
+                "ts": time.time(), "kind": "input",
+                "detail": {"body": b.get("kind"), "gate": "open" if guard.takeover_active() else "closed"}})
+            if len(STATE.get("events", [])) > 100: del STATE["events"][:50]
+            if not guard.takeover_active():
+                self._send(200, b'{"ok":false,"skipped":"takeover"}', "application/json")
+                return
+            tab = STATE.get("camofox_tab")
+            kind = b.get("kind")
+            # auto-recover: if the camofox tab is dead (410/404), relaunch + reopen the last URL
+            def _tab_alive():
+                try:
+                    with urllib.request.urlopen(f"{CAMO.base}/tabs/{tab}/evaluate", timeout=15) as r:
+                        return json.loads(r.read()).get("ok") is True
+                except Exception:
+                    return False
+            if kind in ("click", "type", "key", "wheel") and tab and not _tab_alive():
+                last = ""
+                for e in reversed(STATE.get("events", [])):
+                    if e.get("kind") == "nav":
+                        last = e["detail"].get("url", ""); break
+                if not last: last = "https://www.google.com/"
+                try:
+                    STATE["camofox_tab"] = CAMO.open(last)
+                    STATE.setdefault("events", []).append({"ts": time.time(), "kind": "nav", "detail": {"engine": "camofox", "url": last, "auto": "crash-recovery"}})
+                    tab = STATE["camofox_tab"]
+                except Exception:
+                    pass
+            def cam(path, extra):
+                body = {"userId": CAMO.user, **extra}
+                with urllib.request.urlopen(urllib.request.Request(
+                        f"{CAMO.base}/tabs/{tab}/{path}",
+                        data=json.dumps(body).encode(),
+                        headers={"Content-Type": "application/json"}), timeout=30) as r:
+                    return json.loads(r.read())
+            try:
+                if kind == "click":
+                    # shot pixels -> CSS px. Camofox screenshots are 1:1 with the
+                    # CSS viewport (DPR 1, verified via evaluate) — pass through.
+                    # If a client supplies cssW, scale by the real ratio.
+                    sw, sh = float(b.get("shotW") or 0), float(b.get("shotH") or 0)
+                    css_w = float(b.get("cssW") or 0)
+                    css_h = float(b.get("cssH") or 0)
+                    x, y = float(b.get("x", 0)), float(b.get("y", 0))
+                    if sw and css_w:
+                        x = x * css_w / sw
+                        y = y * (css_h or css_w * sh / sw) / sh
+                    res = cam("click", {"coordinates": {"x": x, "y": y}})
+                elif kind == "wheel":
+                    res = cam("scroll", {"dy": int(b.get("dy", 0))})
+                elif kind == "type":
+                    # keyboard mode types into current focus (no ref needed)
+                    res = cam("type", {"text": b.get("text", ""), "mode": "keyboard"})
+                elif kind == "key":
+                    res = cam("press", {"key": b.get("key", "")})
+                else:
+                    res = {"error": f"kind {kind} unsupported"}
+                self._send(200, json.dumps({"ok": True, "res": res}).encode(), "application/json")
+            except Exception as e:
+                self._send(200, json.dumps({"ok": False, "error": str(e)[:200]}).encode(), "application/json")
+        elif self.path == "/start":
+            # Never expose new model-driven work through the legacy unauthenticated UI.
+            import hmac
+            token = os.environ.get("BA_RUN_TOKEN", "")
+            if len(token) < 32:
+                self._send(503, b'{"ok":false,"error":"configure_BA_RUN_TOKEN_min_32_chars"}', "application/json")
+                return
+            supplied = self.headers.get("Authorization", "")
+            if not hmac.compare_digest(supplied, "Bearer " + token):
+                self._send(403, b'{"ok":false,"error":"unauthorized"}', "application/json")
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 65536:
+                    raise ValueError("bad body length")
+                body = json.loads(self.rfile.read(size))
+            except (ValueError, UnicodeError):
+                self._send(400, b'{"ok":false,"error":"invalid_body"}', "application/json")
+                return
+            code, result = start_task(body)
+            self._send(code, json.dumps(result).encode(), "application/json")
+        elif self.path == "/approve":
+            if not approvals.authorized(self.headers):
+                self._send(403, b'{"ok":false,"error":"unauthorized"}', "application/json")
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4096:
+                    raise ValueError("bad body length")
+                b = json.loads(self.rfile.read(size))
+                aid, decision = str(b["action_id"]), str(b["decision"])
+            except (ValueError, KeyError, TypeError, UnicodeError):
+                self._send(400, b'{"ok":false,"error":"invalid_body"}', "application/json")
+                return
+            with STATE_LOCK:
+                events = list(STATE.get("events", []))
+            code, result = approvals.decide(aid, decision, events)
+            if code == 200:
+                with STATE_LOCK:
+                    STATE.setdefault("events", []).append({"ts": time.time(), "kind": "guard",
+                        "detail": {"action_id": aid, "status": "human-" + decision}})
+            self._send(code, json.dumps(result).encode(), "application/json")
         elif self.path == "/takeover":
             BrowserAgent.take_over()
             STATE.setdefault("events", []).append(
@@ -232,7 +466,11 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/input":
             b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             try:
-                res = dispatch_input(STATE.get("tab") or current_tab(), b)
+                tab = STATE.get("tab")
+                if not tab:
+                    self._send(409, b'{"ok":false,"error":"no_task_tab"}', "application/json")
+                    return
+                res = dispatch_input(ENGINE, tab, b)
                 self._send(200, json.dumps({"ok": True, **res}).encode(), "application/json")
             except Exception as e:
                 self._send(200, json.dumps({"ok": False, "error": str(e)[:200]}).encode(), "application/json")
@@ -250,4 +488,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

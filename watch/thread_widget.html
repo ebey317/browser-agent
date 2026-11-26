@@ -1,0 +1,108 @@
+<!doctype html><html><head><meta charset="utf-8"><title>browser-agent — live</title>
+<style>
+  body{margin:0;font-family:system-ui,Roboto,sans-serif;background:var(--card,#141414);color:var(--foreground,#eee);
+       display:flex;flex-direction:column}
+  .bar{display:flex;gap:8px;align-items:center;padding:6px 10px;flex-wrap:wrap}
+  .bar button{cursor:pointer;border-radius:8px;border:1px solid var(--border,#333);
+       background:var(--card,#1c1c1c);color:inherit;font-size:.78rem;padding:5px 12px}
+  .bar button.accent{background:var(--accent,#e4573d);border-color:transparent;color:#fff;font-weight:600}
+  .bar .st{font-size:.72rem;color:var(--muted-foreground,#999);margin-left:auto}
+  #vp{position:relative;line-height:0}
+  #vp img{width:100%;display:block}
+  #vp.over img{cursor:crosshair}
+  #ap{display:none;padding:8px 10px;border:2px solid var(--accent,#e4573d);border-radius:8px;margin:6px 10px;
+      font-size:.8rem;line-height:1.4}
+  #ap.show{display:block}
+  #ap .what{font-family:ui-monospace,monospace;word-break:break-all;margin:4px 0}
+  #ap button{cursor:pointer;border-radius:8px;border:1px solid var(--border,#333);padding:5px 14px;
+      background:var(--card,#1c1c1c);color:inherit;margin-right:6px}
+  #ap button.go{background:#2e7d32;border-color:transparent;color:#fff;font-weight:600}
+  #ap button:disabled{opacity:.45;cursor:not-allowed}
+</style></head>
+<body>
+<div class="bar">
+  <button id="grab" class="accent">✊ Take over</button>
+  <button id="back">🤝 Hand back</button>
+  <button id="stop">⏹ Stop task</button>
+  <span class="st" id="st">connecting…</span>
+</div>
+<div id="ap" role="alert"></div>
+<div id="vp"><canvas id="cv" style="width:100%;display:block"></canvas><img id="img" alt="agent browser" src="/camframe?boot=1" style="display:none"></div>
+<script>
+const $=id=>document.getElementById(id);
+let over=false,W=0,H=0,fail=0;
+const cv=$('cv'), cx=cv.getContext('2d');
+async function drawFrame(){
+  try{
+    const r=await fetch('/camframe?r='+Date.now());
+    if(!r.ok) throw 0;
+    const blob=await r.blob();
+    if(blob.size<1000) throw 0;
+    const bmp=await createImageBitmap(blob);
+    W=bmp.width; H=bmp.height;
+    if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}
+    cx.drawImage(bmp,0,0);
+    fail=0;
+  }catch(e){fail++;}
+}
+setInterval(drawFrame, fail>2 ? 600 : 1500);
+drawFrame();
+function renderApprovals(d){
+  const box=$('ap'), list=d.pending||[];
+  box.textContent='';
+  box.classList.toggle('show',list.length>0);
+  list.forEach(p=>{
+    const row=document.createElement('div');
+    const h=document.createElement('b');
+    h.textContent='The agent wants approval to '+p.kind+':';
+    const w=document.createElement('div'); w.className='what';
+    w.textContent=[p.target,p.value&&('text: '+p.value),p.element&&('field: '+p.element)].filter(Boolean).join('  ·  ');
+    const ok=document.createElement('button'); ok.className='go'; ok.textContent='✔ Approve';
+    const no=document.createElement('button'); no.textContent='✖ Deny';
+    const note=document.createElement('span'); note.style.color='var(--muted-foreground,#999)';
+    if(d.takeover){ok.disabled=true;no.disabled=true;note.textContent='Hand back the wheel first.';}
+    const send=v=>async()=>{ok.disabled=no.disabled=true;
+      try{const r=await post('approve',{action_id:p.action_id,decision:v});
+          const j=await r.json(); if(!j.ok)note.textContent=j.error||'failed';}
+      catch(e){note.textContent='server unreachable';}};
+    ok.onclick=send('approved'); no.onclick=send('denied');
+    row.append(h,w,ok,no,note); box.append(row);
+  });
+}
+async function approvalsTick(){
+  try{renderApprovals(await (await fetch('/approvals')).json());}catch(e){}
+}
+setInterval(approvalsTick,1000);approvalsTick();
+async function st(){
+  try{
+    const d=await (await fetch('/state')).json();
+    over=!!d.takeover;
+    $('vp').classList.toggle('over',over);
+    const stale=!!d.stale;
+    $('st').textContent=(over?'⏸ YOU have the wheel':'▶ agent driving')
+      +(stale?' (stale — press 🤝 to release)':'')
+      +(d.running?' · task running':'');
+  }catch(e){$('st').textContent='server unreachable';}
+}
+setInterval(st,1200);st();
+function post(p,b){return fetch('/'+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});}
+$('grab').onclick=()=>post('takeover');
+$('back').onclick=()=>post('release');
+$('stop').onclick=()=>post('stop');
+$('cv').addEventListener('click',e=>{
+  if(!over)return;
+  const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)*W/r.width, y=(e.clientY-r.top)*H/r.height;
+  post('caminput',{kind:'click',x,y,shotW:W,shotH:H});
+});
+$('cv').addEventListener('wheel',e=>{
+  if(!over)return;e.preventDefault();
+  post('caminput',{kind:'wheel',dy:Math.sign(e.deltaY)*400});
+},{passive:false});
+window.addEventListener('keydown',e=>{
+  if(!over)return;
+  if(e.key.length===1){post('caminput',{kind:'type',text:e.key});e.preventDefault();}
+  else if(['Enter','Backspace','ArrowDown','ArrowUp','Tab','Escape'].includes(e.key)){
+    post('caminput',{kind:'key',key:e.key});e.preventDefault();}
+});
+</script></body></html>
